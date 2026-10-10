@@ -11,6 +11,7 @@
     "voice:serve": "tsx src/voice/server.ts",
     "voice:call": "tsx src/voice/call.ts",
     "voice:sessions": "tsx src/voice/call.ts sessions",
+    "voice:prepare-test": "tsx src/voice/prepare-test.ts",
     "mailbox:scan": "tsx src/mailbox/cli.ts scan",
     "mailbox:plans": "tsx src/mailbox/cli.ts plans",
     "mailbox:plan": "tsx src/mailbox/cli.ts plan",

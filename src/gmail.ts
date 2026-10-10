@@ -103,7 +103,7 @@ function extractBodyParts(
 /**
  * Extracts a readable plain-text body up to 8,000 characters
  */
-function extractBody(payload?: gmail_v1.Schema$MessagePart): string {
+export function extractBody(payload?: gmail_v1.Schema$MessagePart): string {
   if (!payload) return '';
 
   const plainParts: string[] = [];
@@ -257,4 +257,181 @@ export async function createReplyDraft(
   }
 
   return createdDraftId;
+}
+
+/**
+ * Builds an RFC 2822 email and creates a draft in Gmail.
+ * Note: Never sends an email; strictly invokes users.drafts.create.
+ */
+export async function createDraft(
+  auth: OAuth2Client,
+  params: {
+    to: string;
+    subject: string;
+    bodyText: string;
+    threadId?: string;
+  }
+): Promise<{ draftId: string; messageId?: string; threadId?: string }> {
+  const gmail = google.gmail({ version: 'v1', auth });
+
+  const lines: string[] = [
+    `To: ${params.to}`,
+    `Subject: ${params.subject}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    params.bodyText,
+  ];
+
+  const rawRfc2822 = lines.join('\r\n');
+  const encodedRaw = Buffer.from(rawRfc2822, 'utf-8').toString('base64url');
+
+  const draftRes = await gmail.users.drafts.create({
+    userId: 'me',
+    requestBody: {
+      message: {
+        raw: encodedRaw,
+        ...(params.threadId ? { threadId: params.threadId } : {}),
+      },
+    },
+  });
+
+  const createdDraftId = draftRes.data.id;
+  if (!createdDraftId) {
+    throw new Error('Draft creation succeeded but no draft ID was returned by Gmail API.');
+  }
+
+  return {
+    draftId: createdDraftId,
+    messageId: draftRes.data.message?.id || undefined,
+    threadId: draftRes.data.message?.threadId || undefined,
+  };
+}
+
+export interface GmailDraftDetails {
+  draftId: string;
+  messageId?: string;
+  threadId?: string;
+  to: string;
+  subject: string;
+  bodyText: string;
+}
+
+/**
+ * Fetches an existing draft from Gmail to inspect recipient, subject, and content.
+ */
+export async function getReplyDraft(
+  auth: OAuth2Client,
+  draftId: string
+): Promise<GmailDraftDetails | null> {
+  const gmail = google.gmail({ version: 'v1', auth });
+  try {
+    const res = await gmail.users.drafts.get({
+      userId: 'me',
+      id: draftId,
+      format: 'full',
+    });
+
+    const draft = res.data;
+    if (!draft || !draft.id || !draft.message) {
+      return null;
+    }
+
+    const msg = draft.message;
+    const headers = msg.payload?.headers || [];
+    const getHeader = (name: string): string => {
+      const h = headers.find((header) => header.name?.toLowerCase() === name.toLowerCase());
+      return h?.value || '';
+    };
+
+    const to = getHeader('to');
+    const subject = getHeader('subject');
+    const bodyText = extractBody(msg.payload);
+
+    return {
+      draftId: draft.id,
+      messageId: msg.id || undefined,
+      threadId: msg.threadId || undefined,
+      to,
+      subject,
+      bodyText,
+    };
+  } catch (err: unknown) {
+    const isNotFound =
+      err && typeof err === 'object' && 'code' in err && (err as { code: number }).code === 404;
+    if (isNotFound) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Sends an exact pre-existing approved draft via Gmail users.drafts.send().
+ */
+export async function sendReplyDraft(
+  auth: OAuth2Client,
+  draftId: string
+): Promise<{ messageId: string; threadId: string }> {
+  const gmail = google.gmail({ version: 'v1', auth });
+  const res = await gmail.users.drafts.send({
+    userId: 'me',
+    requestBody: {
+      id: draftId,
+    },
+  });
+
+  const messageId = res.data.id;
+  const threadId = res.data.threadId;
+
+  if (!messageId) {
+    throw new Error('Draft send succeeded but no message ID was returned by Gmail API.');
+  }
+
+  return {
+    messageId,
+    threadId: threadId || '',
+  };
+}
+
+/**
+ * Checks if a message in the given thread was already sent to the recipient (idempotency / ambiguous recovery).
+ */
+export async function findSentMessageInThread(
+  auth: OAuth2Client,
+  threadId: string,
+  options: { to: string; subject: string }
+): Promise<{ messageId: string; threadId: string } | null> {
+  const gmail = google.gmail({ version: 'v1', auth });
+  try {
+    const res = await gmail.users.threads.get({
+      userId: 'me',
+      id: threadId,
+      format: 'metadata',
+      metadataHeaders: ['To', 'Subject', 'From'],
+    });
+
+    const messages = res.data.messages || [];
+    for (const msg of messages) {
+      const labels = msg.labelIds || [];
+      if (labels.includes('SENT')) {
+        const headers = msg.payload?.headers || [];
+        const to = headers.find((h) => h.name?.toLowerCase() === 'to')?.value || '';
+        const subject = headers.find((h) => h.name?.toLowerCase() === 'subject')?.value || '';
+
+        const normOptionsTo = options.to.toLowerCase();
+        const normTo = to.toLowerCase();
+        if (normTo.includes(normOptionsTo) || normOptionsTo.includes(normTo)) {
+          return {
+            messageId: msg.id || '',
+            threadId: msg.threadId || threadId,
+          };
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }

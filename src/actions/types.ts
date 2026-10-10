@@ -7,6 +7,9 @@ export const ActionStatusSchema = z.enum([
   'AWAITING_APPROVAL',
   'APPROVED',
   'REJECTED',
+  'EXECUTING',
+  'SENT',
+  'EXECUTION_FAILED',
   'EXECUTED',
   'FAILED',
 ]);
