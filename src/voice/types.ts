@@ -12,6 +12,7 @@ export type VoiceSessionStatus = z.infer<typeof VoiceSessionStatusSchema>;
 
 export const VoiceConversationStateSchema = z.enum([
   'GREETING',
+  'MAILBOX_SELECTING',
   'READY',
   'READING_SUMMARY',
   'READING_DRAFT',
@@ -54,6 +55,7 @@ export const VoiceSessionSchema = z.object({
   completedAt: z.string().nullable(),
   error: z.string().nullable(),
   transcript: z.array(TranscriptEntrySchema),
+  metadata: z.record(z.unknown()).optional(),
 });
 export type VoiceSession = z.infer<typeof VoiceSessionSchema>;
 

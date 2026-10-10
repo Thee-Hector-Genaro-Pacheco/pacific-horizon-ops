@@ -145,6 +145,8 @@ export class VoiceStore {
     actionId: string;
     toPhone: string;
     fromPhone: string;
+    conversationState?: VoiceConversationState;
+    metadata?: Record<string, unknown>;
   }): VoiceSession {
     const sessionId = `vses_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const now = new Date().toISOString();
@@ -154,7 +156,7 @@ export class VoiceStore {
       actionId: params.actionId,
       callSid: null,
       status: 'CREATED',
-      conversationState: 'GREETING',
+      conversationState: params.conversationState || 'GREETING',
       toPhone: params.toPhone,
       fromPhone: params.fromPhone,
       lastSpokenText: null,
@@ -163,6 +165,7 @@ export class VoiceStore {
       completedAt: null,
       error: null,
       transcript: [],
+      metadata: params.metadata,
     };
 
     const sessions = this.loadSessions();
@@ -302,6 +305,52 @@ export class VoiceStore {
     }
 
     session.transcript.push(entry);
+    session.updatedAt = new Date().toISOString();
+
+    sessions.set(sessionId, session);
+    this.persistSessions(sessions);
+    return session;
+  }
+
+  /**
+   * Updates session actionId and optional metadata
+   */
+  public updateSessionActionId(
+    sessionId: string,
+    actionId: string,
+    metadata?: Record<string, unknown>
+  ): VoiceSession {
+    const sessions = this.loadSessions();
+    const session = sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`VoiceSession "${sessionId}" not found.`);
+    }
+
+    session.actionId = actionId;
+    session.updatedAt = new Date().toISOString();
+    if (metadata) {
+      session.metadata = { ...(session.metadata || {}), ...metadata };
+    }
+
+    sessions.set(sessionId, session);
+    this.persistSessions(sessions);
+    return session;
+  }
+
+  /**
+   * Updates session metadata
+   */
+  public updateSessionMetadata(
+    sessionId: string,
+    metadata: Record<string, unknown>
+  ): VoiceSession {
+    const sessions = this.loadSessions();
+    const session = sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`VoiceSession "${sessionId}" not found.`);
+    }
+
+    session.metadata = { ...(session.metadata || {}), ...metadata };
     session.updatedAt = new Date().toISOString();
 
     sessions.set(sessionId, session);

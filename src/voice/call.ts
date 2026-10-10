@@ -10,10 +10,11 @@ Pacific Rising Ops - Voice Call CLI (PHRO-003)
 
 Usage:
   npm run voice:call -- <actionId> [--dry-run]
+  npm run voice:call -- mailbox [--dry-run]
   npm run voice:sessions [--all]
 
 Options:
-  --dry-run    Validates action and parameters without dialing Twilio
+  --dry-run    Validates action/mailbox and parameters without dialing Twilio
   --all        List all sessions regardless of status
 `);
 }
@@ -26,27 +27,31 @@ export async function executeVoiceCall(actionId: string, isDryRun: boolean): Pro
     console.log(' [MODE] DRY-RUN enabled (no actual call will be placed)\n');
   }
 
-  // 1. Require valid actionId
+  // 1. Require valid actionId or 'mailbox'
   if (!actionId || actionId.startsWith('--')) {
-    console.error('Error: You must provide a valid actionId.');
+    console.error('Error: You must provide a valid actionId or "mailbox".');
     printUsage();
     process.exit(1);
   }
 
-  // 2. Fetch action and verify eligibility
-  const action = defaultActionStore.getAction(actionId);
-  if (!action) {
-    console.error(`Error: Action with ID "${actionId}" was not found in actions.json.`);
-    process.exit(1);
-  }
+  const isMailbox = actionId.toLowerCase() === 'mailbox';
 
-  // 3. Only AWAITING_APPROVAL actions are eligible
-  if (action.status !== 'AWAITING_APPROVAL') {
-    console.error(
-      `Error: Action "${actionId}" is in status "${action.status}". ` +
-      'Only actions currently in "AWAITING_APPROVAL" can be called about.'
-    );
-    process.exit(1);
+  if (!isMailbox) {
+    // 2. Fetch action and verify eligibility
+    const action = defaultActionStore.getAction(actionId);
+    if (!action) {
+      console.error(`Error: Action with ID "${actionId}" was not found in actions.json.`);
+      process.exit(1);
+    }
+
+    // 3. Only AWAITING_APPROVAL actions are eligible
+    if (action.status !== 'AWAITING_APPROVAL') {
+      console.error(
+        `Error: Action "${actionId}" is in status "${action.status}". ` +
+        'Only actions currently in "AWAITING_APPROVAL" can be called about.'
+      );
+      process.exit(1);
+    }
   }
 
   // 4. Strict phone number enforcement:
@@ -64,16 +69,23 @@ export async function executeVoiceCall(actionId: string, isDryRun: boolean): Pro
     process.exit(1);
   }
 
-  console.log(`Target Action: ${action.actionId}`);
-  console.log(`Subject:       "${action.subject}"`);
-  console.log(`From:          ${action.from}`);
-  console.log(`Category:      ${action.classificationCategory}`);
-  console.log(`Destination:   ${maskPhoneNumber(toPhone)} (PHRO_OWNER_PHONE_E164)`);
-  console.log(`Caller ID:     ${maskPhoneNumber(fromPhone)} (TWILIO_PHONE_NUMBER_E164)`);
+  if (isMailbox) {
+    console.log(`Target:        Mailbox Review (Latest 3 Eligible Messages)`);
+    console.log(`Destination:   ${maskPhoneNumber(toPhone)} (PHRO_OWNER_PHONE_E164)`);
+    console.log(`Caller ID:     ${maskPhoneNumber(fromPhone)} (TWILIO_PHONE_NUMBER_E164)`);
+  } else {
+    const action = defaultActionStore.getAction(actionId)!;
+    console.log(`Target Action: ${action.actionId}`);
+    console.log(`Subject:       "${action.subject}"`);
+    console.log(`From:          ${action.from}`);
+    console.log(`Category:      ${action.classificationCategory}`);
+    console.log(`Destination:   ${maskPhoneNumber(toPhone)} (PHRO_OWNER_PHONE_E164)`);
+    console.log(`Caller ID:     ${maskPhoneNumber(fromPhone)} (TWILIO_PHONE_NUMBER_E164)`);
+  }
 
   if (isDryRun) {
     console.log('\n[DRY-RUN VALIDATION SUCCESSFUL]');
-    console.log('Action is eligible for voice call.');
+    console.log(`${isMailbox ? 'Mailbox session' : 'Action'} is eligible for voice call.`);
     console.log('Safeguards confirmed:');
     console.log('  - Destination locked to PHRO_OWNER_PHONE_E164');
     console.log('  - Caller ID locked to TWILIO_PHONE_NUMBER_E164');
@@ -94,9 +106,11 @@ export async function executeVoiceCall(actionId: string, isDryRun: boolean): Pro
 
   // Create voice session record
   const session = defaultVoiceStore.createSession({
-    actionId: action.actionId,
+    actionId: isMailbox ? 'mailbox' : actionId,
     toPhone,
     fromPhone,
+    conversationState: isMailbox ? 'MAILBOX_SELECTING' : 'GREETING',
+    metadata: isMailbox ? { mode: 'mailbox' } : undefined,
   });
 
   console.log(`\nCreated VoiceSession: ${session.sessionId}`);

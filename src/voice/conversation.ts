@@ -1,8 +1,18 @@
 import { type ActionRecord } from '../actions/types.js';
 import { type ActionStore, defaultActionStore } from '../actions/store.js';
+import { type ActionExecutor, defaultActionExecutor } from '../actions/executor.js';
 import { type VoiceSession } from './types.js';
 import { type VoiceStore, defaultVoiceStore } from './store.js';
 import { classifyVoiceIntent } from './intents.js';
+import {
+  type EligibleInboxMessage,
+  parseMessageSelection,
+  generateDraftReply,
+  classifyInboxMessage,
+  type MessageClassificationResult,
+} from './mailbox.js';
+import { createReplyDraft, type EmailMessage } from '../gmail.js';
+import { getAuthenticatedClient, getExpectedAccount } from '../auth.js';
 
 export interface ConversationTurnResult {
   responseText: string;
@@ -79,6 +89,14 @@ export async function handleVoiceUtterance(params: {
   utterance: string;
   voiceStore?: VoiceStore;
   actionStore?: ActionStore;
+  executor?: ActionExecutor;
+  onProgress?: (text: string) => void;
+  draftCreator?: (params: {
+    to: string;
+    subject: string;
+    bodyText: string;
+    threadId?: string;
+  }) => Promise<{ draftId: string; messageId?: string; threadId?: string }>;
 }): Promise<ConversationTurnResult> {
   const voiceStore = params.voiceStore || defaultVoiceStore;
   const actionStore = params.actionStore || defaultActionStore;
@@ -91,7 +109,451 @@ export async function handleVoiceUtterance(params: {
     timestamp: new Date().toISOString(),
   });
 
-  // Verify the action exists and fetch fresh state
+  const isMailboxMode =
+    session.actionId === 'mailbox' ||
+    session.conversationState === 'MAILBOX_SELECTING' ||
+    session.metadata?.mode === 'mailbox';
+
+  if (isMailboxMode) {
+    const availableMessages = (session.metadata?.availableMessages as EligibleInboxMessage[]) || [];
+    const selectedMessage = session.metadata?.selectedMessage as EligibleInboxMessage | undefined;
+    const norm = utterance.toLowerCase().trim().replace(/[.,!?;:]/g, '');
+
+    // 1. If currently in MAILBOX_SELECTING
+    if (session.conversationState === 'MAILBOX_SELECTING') {
+      if (norm === 'bye' || norm === 'goodbye' || norm === 'hang up' || norm === 'end call') {
+        const responseText = 'Understood. Goodbye!';
+        voiceStore.updateConversationState(session.sessionId, 'COMPLETE', {
+          lastSpokenText: responseText,
+          reason: 'Caller ended call',
+        });
+        return { responseText, endCall: true };
+      }
+
+      const selection = parseMessageSelection(utterance);
+      if (selection !== null) {
+        const chosen = availableMessages.find((m) => m.index === selection);
+        if (chosen) {
+          const classification = classifyInboxMessage(chosen);
+          const summary = chosen.snippet || chosen.body.slice(0, 150).replace(/\s+/g, ' ');
+          const automatedNote = classification.isAutomatedNoise
+            ? ` Note: this appears to be an automated ${classification.category === 'newsletter_promo' ? 'newsletter' : 'system notification'}.`
+            : '';
+          const responseText = `Selected message ${chosen.index} from ${chosen.senderName} about "${chosen.subject}".${automatedNote} Summary: ${summary}. What would you like to do? You can say draft a response, read more, or go back.`;
+          voiceStore.updateSessionMetadata(session.sessionId, {
+            ...session.metadata,
+            mode: 'mailbox',
+            selectedMessage: chosen,
+            selectedMessageIndex: chosen.index,
+            selectedMessageClassification: classification,
+            boundActionId: null,
+            draftReply: null,
+          });
+          voiceStore.updateConversationState(session.sessionId, 'READY', {
+            lastSpokenText: responseText,
+            reason: `Selected message ${chosen.index}`,
+          });
+          return { responseText, endCall: false };
+        } else {
+          const countWords = ['zero', 'one', 'two', 'three'];
+          const countStr = countWords[availableMessages.length] || String(availableMessages.length);
+          const responseText = `I only found ${countStr} messages. Please choose message one${availableMessages.length > 1 ? ` or message two${availableMessages.length > 2 ? ' or message three' : ''}` : ''}.`;
+          voiceStore.updateConversationState(session.sessionId, 'MAILBOX_SELECTING', {
+            lastSpokenText: responseText,
+          });
+          return { responseText, endCall: false };
+        }
+      }
+
+      if (norm === 'help' || norm.includes('options') || norm.includes('what can i say')) {
+        const responseText =
+          'You can say "message one", "message two", or "message three" to select an email to review, or say "hang up" to end the call.';
+        voiceStore.updateConversationState(session.sessionId, 'MAILBOX_SELECTING', {
+          lastSpokenText: responseText,
+        });
+        return { responseText, endCall: false };
+      }
+
+      const responseText =
+        'Please choose which message you would like to review: message one, message two, or message three.';
+      voiceStore.updateConversationState(session.sessionId, 'MAILBOX_SELECTING', {
+        lastSpokenText: responseText,
+      });
+      return { responseText, endCall: false };
+    }
+
+    // 2. A message IS selected (session.conversationState !== 'MAILBOX_SELECTING')
+    // Check if in AWAITING_APPROVAL_CONFIRMATION
+    if (session.conversationState === 'AWAITING_APPROVAL_CONFIRMATION') {
+      const boundActionId = (session.metadata?.boundActionId as string) || (session.actionId !== 'mailbox' ? session.actionId : null);
+      const boundAction = boundActionId ? actionStore.getAction(boundActionId) : null;
+
+      if (!boundAction) {
+        const responseText = 'Error: The draft action for this message could not be found. Ending call.';
+        voiceStore.updateSessionStatus(session.sessionId, 'FAILED', {
+          error: 'Bound action not found during confirmation',
+        });
+        return { responseText, endCall: true };
+      }
+
+      if (isConfirmationPhrase(utterance, 'approval')) {
+        if (boundAction.status !== 'AWAITING_APPROVAL') {
+          const responseText = `Action state changed to ${boundAction.status} during this call. Approval was not applied. Ending call.`;
+          voiceStore.updateConversationState(session.sessionId, 'COMPLETE', {
+            lastSpokenText: responseText,
+            reason: 'Action status conflict',
+          });
+          return { responseText, endCall: true };
+        }
+
+        actionStore.approveAction(boundAction.actionId, {
+          decision: 'approved',
+          approvedBy: 'owner_voice',
+          approvedAt: new Date().toISOString(),
+          approvalSource: 'voice',
+          notes: 'Confirmed and approved via Twilio voice call',
+        });
+
+        if (params.executor) {
+          if (params.onProgress) {
+            params.onProgress('Approval confirmed. Sending the email now.');
+          }
+
+          const execResult = await params.executor.executeApprovedAction(boundAction.actionId, {
+            actor: 'voice:owner_voice',
+            approvalSource: 'voice',
+            actionStore,
+          });
+
+          if (execResult.success) {
+            const responseText = 'Approval confirmed. The email has been sent successfully. Goodbye!';
+            voiceStore.updateConversationState(session.sessionId, 'COMPLETE', {
+              lastSpokenText: responseText,
+              reason: 'Voice approval confirmed and email sent successfully',
+            });
+            return { responseText, endCall: true };
+          } else {
+            const responseText =
+              "Your approval was recorded, but I wasn't able to send the email. The message has not been marked as sent. Goodbye!";
+            voiceStore.updateConversationState(session.sessionId, 'COMPLETE', {
+              lastSpokenText: responseText,
+              reason: `Voice approval confirmed but email send failed: ${execResult.error}`,
+            });
+            return { responseText, endCall: true };
+          }
+        }
+
+        const responseText = 'Approval confirmed. The email has been sent successfully. Goodbye!';
+        voiceStore.updateConversationState(session.sessionId, 'COMPLETE', {
+          lastSpokenText: responseText,
+          reason: 'Voice approval confirmed',
+        });
+        return { responseText, endCall: true };
+      }
+
+      if (isCancellationPhrase(utterance)) {
+        const responseText = 'Approval cancelled. The draft remains awaiting approval. What would you like to do next?';
+        voiceStore.updateConversationState(session.sessionId, 'READY', {
+          lastSpokenText: responseText,
+          reason: 'Approval confirmation cancelled by user',
+        });
+        return { responseText, endCall: false };
+      }
+
+      const responseText =
+        'Approval was not confirmed. To confirm approval of this draft, please say "confirm approval", or say "cancel" to return.';
+      voiceStore.updateConversationState(session.sessionId, 'AWAITING_APPROVAL_CONFIRMATION', {
+        lastSpokenText: responseText,
+        reason: 'Unconfirmed approval response',
+      });
+      return { responseText, endCall: false };
+    }
+
+    // 3. User says "hang up" / "goodbye"
+    if (norm === 'bye' || norm === 'goodbye' || norm === 'hang up' || norm === 'end call') {
+      const responseText = 'Understood. Goodbye!';
+      voiceStore.updateConversationState(session.sessionId, 'COMPLETE', {
+        lastSpokenText: responseText,
+        reason: 'Caller ended call',
+      });
+      return { responseText, endCall: true };
+    }
+
+    // 4. Switching message while reviewing (e.g. "message two")
+    const switchSelection = parseMessageSelection(utterance);
+    if (switchSelection !== null) {
+      const newChosen = availableMessages.find((m) => m.index === switchSelection);
+      if (newChosen) {
+        const classification = classifyInboxMessage(newChosen);
+        // Critical: unbind any previous draft/action so it cannot be accidentally sent!
+        voiceStore.updateSessionActionId(session.sessionId, 'mailbox', {
+          ...session.metadata,
+          mode: 'mailbox',
+          selectedMessage: newChosen,
+          selectedMessageIndex: newChosen.index,
+          selectedMessageClassification: classification,
+          boundActionId: null,
+          draftReply: null,
+        });
+        const summary = newChosen.snippet || newChosen.body.slice(0, 150).replace(/\s+/g, ' ');
+        const automatedNote = classification.isAutomatedNoise
+          ? ` Note: this appears to be an automated ${classification.category === 'newsletter_promo' ? 'newsletter' : 'system notification'}.`
+          : '';
+        const responseText = `Switched to message ${newChosen.index} from ${newChosen.senderName} about "${newChosen.subject}".${automatedNote} Summary: ${summary}. What would you like to do? You can say draft a response, read more, or go back.`;
+        voiceStore.updateConversationState(session.sessionId, 'READY', {
+          lastSpokenText: responseText,
+          reason: `Switched to message ${newChosen.index}`,
+        });
+        return { responseText, endCall: false };
+      }
+    }
+
+    // 5. "go back" / "next message"
+    if (
+      norm === 'go back' ||
+      norm === 'back' ||
+      norm === 'next message' ||
+      norm === 'previous message' ||
+      norm === 'messages' ||
+      norm === 'return'
+    ) {
+      voiceStore.updateSessionActionId(session.sessionId, 'mailbox', {
+        ...session.metadata,
+        mode: 'mailbox',
+        selectedMessage: null,
+        selectedMessageIndex: null,
+        boundActionId: null,
+        draftReply: null,
+      });
+      const responseText =
+        'Returning to your recent emails. You can choose message one, message two, or message three.';
+      voiceStore.updateConversationState(session.sessionId, 'MAILBOX_SELECTING', {
+        lastSpokenText: responseText,
+        reason: 'Returned to message selection',
+      });
+      return { responseText, endCall: false };
+    }
+
+    if (!selectedMessage) {
+      const responseText = 'Please select a message first: message one, message two, or message three.';
+      voiceStore.updateConversationState(session.sessionId, 'MAILBOX_SELECTING', {
+        lastSpokenText: responseText,
+      });
+      return { responseText, endCall: false };
+    }
+
+    // 6. "draft a response" / "draft reply" / "draft response" / "reply"
+    if (
+      norm.includes('draft a response') ||
+      norm.includes('draft response') ||
+      norm.includes('draft reply') ||
+      norm.includes('prepare a draft') ||
+      norm === 'draft' ||
+      norm === 'reply'
+    ) {
+      const classification =
+        (session.metadata?.selectedMessageClassification as MessageClassificationResult) ||
+        classifyInboxMessage(selectedMessage);
+
+      if (classification && classification.canDraft === false) {
+        const responseText = `This message appears to be an automated ${classification.category === 'newsletter_promo' ? 'newsletter' : 'system notification'}, so automated drafting is not supported. You can say 'read more' to hear the message, or say 'go back' to select another email.`;
+        voiceStore.updateConversationState(session.sessionId, 'READY', {
+          lastSpokenText: responseText,
+          reason: 'Draft refused for automated noise message',
+        });
+        return { responseText, endCall: false };
+      }
+
+      const draftText = generateDraftReply(selectedMessage);
+      let draftId = `draft_${Date.now()}`;
+      let messageId = selectedMessage.messageId;
+      let threadId = selectedMessage.threadId;
+
+      if (params.draftCreator) {
+        const res = await params.draftCreator({
+          to: selectedMessage.from,
+          subject: selectedMessage.subject,
+          bodyText: draftText,
+          threadId: selectedMessage.threadId,
+        });
+        draftId = res.draftId;
+        messageId = res.messageId || messageId;
+        threadId = res.threadId || threadId;
+      } else {
+        const auth = await getAuthenticatedClient('business');
+        const emailMsg: EmailMessage = {
+          messageId: selectedMessage.messageId,
+          threadId: selectedMessage.threadId,
+          from: selectedMessage.from,
+          to: getExpectedAccount('business') || '',
+          subject: selectedMessage.subject,
+          date: selectedMessage.date,
+          messageIdHeader: '',
+          references: '',
+          body: selectedMessage.body,
+        };
+        draftId = await createReplyDraft(auth, emailMsg, draftText);
+      }
+
+      const { action: createdAction } = actionStore.createDraftAction({
+        messageId,
+        threadId,
+        draftId,
+        subject: selectedMessage.subject,
+        from: selectedMessage.from,
+        classificationCategory: 'booking_inquiry',
+        confidence: 1.0,
+        draftReply: draftText,
+      });
+
+      voiceStore.updateSessionActionId(session.sessionId, createdAction.actionId, {
+        ...session.metadata,
+        mode: 'mailbox',
+        selectedMessage,
+        boundActionId: createdAction.actionId,
+        draftReply: draftText,
+        draftId,
+      });
+
+      const responseText = `I created a draft reply in Gmail: "${draftText}". Would you like to approve it, or make changes?`;
+      voiceStore.updateConversationState(session.sessionId, 'READY', {
+        lastSpokenText: responseText,
+        reason: 'Draft response created',
+      });
+      return { responseText, endCall: false };
+    }
+
+    // 7. "read the draft" / "read draft"
+    if (
+      norm.includes('read draft') ||
+      norm.includes('read the draft') ||
+      norm.includes('what is the draft') ||
+      norm === 'the draft'
+    ) {
+      const draftReply = (session.metadata?.draftReply as string) || null;
+      if (draftReply) {
+        const responseText = `The proposed draft reply is: "${draftReply}". Would you like to approve it, or make changes?`;
+        voiceStore.updateConversationState(session.sessionId, 'READING_DRAFT', {
+          lastSpokenText: responseText,
+        });
+        return { responseText, endCall: false };
+      } else {
+        const responseText =
+          'No draft has been created for this email yet. Say "draft a response" to create one.';
+        voiceStore.updateConversationState(session.sessionId, 'READY', {
+          lastSpokenText: responseText,
+        });
+        return { responseText, endCall: false };
+      }
+    }
+
+    // 8. "summarize it" / "summary"
+    if (
+      norm === 'summary' ||
+      norm.includes('summarize') ||
+      norm.includes('what is it about') ||
+      norm.includes('give me a summary')
+    ) {
+      const summary = selectedMessage.snippet || selectedMessage.body.slice(0, 150).replace(/\s+/g, ' ');
+      const responseText = `Here is the summary for the email from ${selectedMessage.senderName} about "${selectedMessage.subject}": ${summary}. Would you like to draft a response, or read the full email?`;
+      voiceStore.updateConversationState(session.sessionId, 'READING_SUMMARY', {
+        lastSpokenText: responseText,
+      });
+      return { responseText, endCall: false };
+    }
+
+    // 9. "read more" / "read email" / "read the email" / "read message"
+    if (
+      norm.includes('read more') ||
+      norm.includes('read email') ||
+      norm.includes('read the email') ||
+      norm.includes('read message') ||
+      norm.includes('full email')
+    ) {
+      const responseText = `Here is the email from ${selectedMessage.senderName}: "${selectedMessage.body}". You can say draft a response, or go back.`;
+      voiceStore.updateConversationState(session.sessionId, 'READY', {
+        lastSpokenText: responseText,
+      });
+      return { responseText, endCall: false };
+    }
+
+    // 10. "approve"
+    if (norm === 'approve' || norm === 'approve it' || norm === 'approve draft' || norm === 'i approve') {
+      const boundActionId = (session.metadata?.boundActionId as string) || (session.actionId !== 'mailbox' ? session.actionId : null);
+      const boundAction = boundActionId ? actionStore.getAction(boundActionId) : null;
+
+      if (!boundAction || boundAction.status !== 'AWAITING_APPROVAL') {
+        const responseText =
+          'No draft has been created for this email yet. Please say "draft a response" first.';
+        voiceStore.updateConversationState(session.sessionId, 'READY', {
+          lastSpokenText: responseText,
+        });
+        return { responseText, endCall: false };
+      }
+
+      const responseText = `Are you sure you want to approve sending this draft to ${selectedMessage.senderName}? Please say "confirm approval" to send.`;
+      voiceStore.updateConversationState(session.sessionId, 'AWAITING_APPROVAL_CONFIRMATION', {
+        lastSpokenText: responseText,
+        reason: 'Initiated approval confirmation',
+      });
+      return { responseText, endCall: false };
+    }
+
+    // 11. "confirm approval" outside of confirmation state
+    if (isConfirmationPhrase(utterance, 'approval')) {
+      const responseText =
+        'Please say "approve" first to review the draft before confirming approval.';
+      voiceStore.updateConversationState(session.sessionId, 'READY', {
+        lastSpokenText: responseText,
+      });
+      return { responseText, endCall: false };
+    }
+
+    // 12. "reject"
+    if (norm === 'reject' || norm === 'reject it' || norm === 'decline') {
+      const boundActionId = (session.metadata?.boundActionId as string) || (session.actionId !== 'mailbox' ? session.actionId : null);
+      const boundAction = boundActionId ? actionStore.getAction(boundActionId) : null;
+
+      if (!boundAction || boundAction.status !== 'AWAITING_APPROVAL') {
+        const responseText =
+          'No draft has been created for this email yet. You can say "go back" to select another message.';
+        voiceStore.updateConversationState(session.sessionId, 'READY', {
+          lastSpokenText: responseText,
+        });
+        return { responseText, endCall: false };
+      }
+
+      const responseText =
+        'To confirm rejection of this draft, please say "confirm rejection".';
+      voiceStore.updateConversationState(session.sessionId, 'AWAITING_REJECTION_CONFIRMATION', {
+        lastSpokenText: responseText,
+        reason: 'Initiated rejection confirmation',
+      });
+      return { responseText, endCall: false };
+    }
+
+    // 13. "help"
+    if (norm === 'help' || norm.includes('options') || norm.includes('what can i say')) {
+      const draftReply = (session.metadata?.draftReply as string) || null;
+      const responseText = draftReply
+        ? 'You can say "approve" to approve sending the draft, "read draft" to hear it again, or "go back" to select another email.'
+        : 'You can say "draft a response", "read more" to hear the full message, or "go back" to select another email.';
+      voiceStore.updateConversationState(session.sessionId, 'READY', {
+        lastSpokenText: responseText,
+      });
+      return { responseText, endCall: false };
+    }
+
+    // 14. Unknown
+    const responseText =
+      'I didn\'t catch that. You can say "draft a response", "read more", "approve", or "go back".';
+    voiceStore.updateConversationState(session.sessionId, 'READY', {
+      lastSpokenText: responseText,
+    });
+    return { responseText, endCall: false };
+  }
+
+  // Single-action Mode: Verify the action exists and fetch fresh state
   const action = actionStore.getAction(session.actionId);
   if (!action) {
     const responseText = 'Error: The associated action record could not be found. Ending call.';
@@ -122,6 +584,36 @@ export async function handleVoiceUtterance(params: {
         approvalSource: 'voice',
         notes: 'Confirmed and approved via Twilio voice call',
       });
+
+      if (params.executor) {
+        if (params.onProgress) {
+          params.onProgress('Approval confirmed. Sending the email now.');
+        }
+
+        // Execute approved draft via executor
+        const execResult = await params.executor.executeApprovedAction(action.actionId, {
+          actor: 'voice:owner_voice',
+          approvalSource: 'voice',
+          actionStore,
+        });
+
+        if (execResult.success) {
+          const responseText = 'Approval confirmed. The email has been sent successfully. Goodbye!';
+          voiceStore.updateConversationState(session.sessionId, 'COMPLETE', {
+            lastSpokenText: responseText,
+            reason: 'Voice approval confirmed and email sent successfully',
+          });
+          return { responseText, endCall: true };
+        } else {
+          const responseText =
+            "Your approval was recorded, but I wasn't able to send the email. The message has not been marked as sent. Goodbye!";
+          voiceStore.updateConversationState(session.sessionId, 'COMPLETE', {
+            lastSpokenText: responseText,
+            reason: `Voice approval confirmed but email send failed: ${execResult.error}`,
+          });
+          return { responseText, endCall: true };
+        }
+      }
 
       const responseText = 'Approval confirmed. The action is now marked approved. No email has been sent. Goodbye!';
       voiceStore.updateConversationState(session.sessionId, 'COMPLETE', {

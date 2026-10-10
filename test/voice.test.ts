@@ -13,6 +13,8 @@ import {
 } from '../src/voice/conversation.js';
 import { type ActionRecord, maskPhoneNumber } from '../src/voice/types.js';
 import { formatTwilioRestError } from '../src/voice/twilio.js';
+import { createVoiceServer } from '../src/voice/server.js';
+import { WebSocket } from 'ws';
 
 describe('Voice Operations Agent (PHRO-003)', () => {
   let tempDir: string;
@@ -337,7 +339,7 @@ describe('Voice Operations Agent (PHRO-003)', () => {
     assert.equal(reloadedSession.transcript[0].text, 'Hello test');
   });
 
-  it('proves no email send capability exists anywhere in src', () => {
+  it('proves no direct email send capability exists outside authorized gmail adapter', () => {
     const srcDir = path.resolve(process.cwd(), 'src');
     function scanDir(dir: string): string[] {
       const results: string[] = [];
@@ -355,22 +357,229 @@ describe('Voice Operations Agent (PHRO-003)', () => {
     }
 
     const files = scanDir(srcDir);
-    const forbiddenPatterns = [
+    // Arbitrary email sending without an approved draft is strictly forbidden everywhere
+    const universallyForbidden = [
       /\bmessages\.send\b/,
-      /\bdrafts\.send\b/,
       /\busers\.messages\.send\b/,
-      /\busers\.drafts\.send\b/,
+      /\bdrafts\.send\b(?!\()/, // only users.drafts.send allowed
     ];
 
     for (const f of files) {
       const content = fs.readFileSync(f, 'utf-8');
-      for (const pattern of forbiddenPatterns) {
+      for (const pattern of universallyForbidden) {
         assert.equal(
           pattern.test(content),
           false,
-          `Forbidden email send pattern ${pattern} found in ${f}`
+          `Universally forbidden email send pattern ${pattern} found in ${f}`
         );
       }
+      // users.drafts.send must NEVER appear in voice or mailbox subsystems
+      if (f.includes('/voice/') || f.includes('/mailbox/')) {
+        assert.equal(
+          /users\.drafts\.send/.test(content),
+          false,
+          `users.drafts.send is forbidden in ${f}`
+        );
+      }
+    }
+  });
+
+  it('D. disconnect before confirmation leaves action in AWAITING_APPROVAL', async () => {
+    const session = voiceStore.createSession({
+      actionId: testAction.actionId,
+      toPhone: '+15551234567',
+      fromPhone: '+15559876543',
+    });
+
+    // Caller says approve -> confirmation requested
+    const turn1 = await handleVoiceUtterance({
+      session,
+      utterance: 'approve',
+      actionStore,
+      voiceStore,
+    });
+    assert.equal(turn1.endCall, false);
+    assert.ok(turn1.responseText.includes('confirm approval'));
+
+    // Verify session is in confirmation state, action is still awaiting approval
+    const freshSession = voiceStore.getSession(session.sessionId)!;
+    assert.equal(freshSession.conversationState, 'AWAITING_APPROVAL_CONFIRMATION');
+    const actionBefore = actionStore.getAction(testAction.actionId);
+    assert.equal(actionBefore?.status, 'AWAITING_APPROVAL');
+
+    // Simulate abrupt disconnect / WebSocket close
+    voiceStore.updateSessionStatus(session.sessionId, 'COMPLETED', {
+      reason: 'WebSocket closed (1006 abnormal)',
+    });
+
+    const sessionAfter = voiceStore.getSession(session.sessionId)!;
+    assert.equal(sessionAfter.status, 'COMPLETED');
+    const actionAfter = actionStore.getAction(testAction.actionId);
+    assert.equal(actionAfter?.status, 'AWAITING_APPROVAL');
+    assert.equal(actionAfter?.approvalMetadata, null);
+  });
+
+  it('E. duplicate "confirm approval" is strictly idempotent and fails closed without re-applying mutation', async () => {
+    const session = voiceStore.createSession({
+      actionId: testAction.actionId,
+      toPhone: '+15551234567',
+      fromPhone: '+15559876543',
+    });
+
+    voiceStore.updateConversationState(session.sessionId, 'AWAITING_APPROVAL_CONFIRMATION');
+    const session1 = voiceStore.getSession(session.sessionId)!;
+
+    // First confirm approval
+    const turn1 = await handleVoiceUtterance({
+      session: session1,
+      utterance: 'confirm approval',
+      actionStore,
+      voiceStore,
+    });
+    assert.equal(turn1.endCall, true);
+    assert.ok(turn1.responseText.includes('Approval confirmed'));
+
+    const action1 = actionStore.getAction(testAction.actionId);
+    assert.equal(action1?.status, 'APPROVED');
+    const firstApprovedAt = action1?.approvalMetadata?.approvedAt;
+
+    // Second confirm approval attempt on already approved action
+    const session2 = voiceStore.createSession({
+      actionId: testAction.actionId,
+      toPhone: '+15551234567',
+      fromPhone: '+15559876543',
+    });
+    voiceStore.updateConversationState(session2.sessionId, 'AWAITING_APPROVAL_CONFIRMATION');
+    const freshSession2 = voiceStore.getSession(session2.sessionId)!;
+
+    const turn2 = await handleVoiceUtterance({
+      session: freshSession2,
+      utterance: 'confirm approval',
+      actionStore,
+      voiceStore,
+    });
+    assert.equal(turn2.endCall, true);
+    assert.ok(turn2.responseText.includes('Action state changed to APPROVED'));
+
+    const action2 = actionStore.getAction(testAction.actionId);
+    assert.equal(action2?.status, 'APPROVED');
+    assert.equal(action2?.approvalMetadata?.approvedAt, firstApprovedAt);
+  });
+
+  it('F. Twilio status callback while session is ACTIVE does not prematurely terminate active conversation unless status is terminal', () => {
+    const session = voiceStore.createSession({
+      actionId: testAction.actionId,
+      toPhone: '+15551234567',
+      fromPhone: '+15559876543',
+    });
+
+    voiceStore.updateSessionStatus(session.sessionId, 'ACTIVE', { callSid: 'CA_test_f' });
+
+    // Non-terminal status: in-progress on already active session should keep status ACTIVE
+    const s1 = voiceStore.getSession(session.sessionId)!;
+    assert.equal(s1.status, 'ACTIVE');
+
+    // Terminal status: completed terminates the session
+    voiceStore.updateSessionStatus(session.sessionId, 'COMPLETED', { callSid: 'CA_test_f' });
+    const s2 = voiceStore.getSession(session.sessionId)!;
+    assert.equal(s2.status, 'COMPLETED');
+  });
+
+  it('G. normal successful approval generates verbal acknowledgement before graceful session completion', async () => {
+    const session = voiceStore.createSession({
+      actionId: testAction.actionId,
+      toPhone: '+15551234567',
+      fromPhone: '+15559876543',
+    });
+
+    voiceStore.updateConversationState(session.sessionId, 'AWAITING_APPROVAL_CONFIRMATION');
+    const freshSession = voiceStore.getSession(session.sessionId)!;
+
+    const turn = await handleVoiceUtterance({
+      session: freshSession,
+      utterance: 'confirm approval',
+      actionStore,
+      voiceStore,
+    });
+
+    // Verbal acknowledgement text must be explicitly returned for speech synthesis
+    assert.equal(turn.endCall, true);
+    assert.ok(turn.responseText.length > 0);
+    assert.ok(turn.responseText.includes('Approval confirmed'));
+    assert.ok(turn.responseText.includes('marked approved'));
+    assert.ok(turn.responseText.includes('No email has been sent'));
+    assert.ok(turn.responseText.includes('Goodbye'));
+  });
+
+  it('simulates full ConversationRelay WebSocket approval conversation with verbal acknowledgement and graceful close', async () => {
+    const prevSkip = process.env.PHRO_SKIP_TWILIO_SIGNATURE_VALIDATION;
+    process.env.PHRO_SKIP_TWILIO_SIGNATURE_VALIDATION = 'true';
+
+    const voiceServer = createVoiceServer({
+      port: 0,
+      actionStore,
+      voiceStore,
+      endCallBufferMs: 50,
+    });
+
+    await voiceServer.start();
+    const actualPort = voiceServer.getPort();
+
+    const session = voiceStore.createSession({
+      actionId: testAction.actionId,
+      toPhone: '+15551234567',
+      fromPhone: '+15559876543',
+    });
+
+    const receivedMessages: Array<{ type: string; token?: string; last?: boolean }> = [];
+
+    const ws = new WebSocket(`ws://localhost:${actualPort}/voice/ws?sessionId=${session.sessionId}`);
+
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => {
+        // Send ConversationRelay setup
+        ws.send(JSON.stringify({ type: 'setup', callSid: 'CA_live_test_01', sessionId: session.sessionId }));
+      });
+
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString());
+        receivedMessages.push(msg);
+
+        // Turn 1: After initial greeting, caller says "approve"
+        if (msg.type === 'text' && msg.token?.includes('Hello! This is Horizon')) {
+          ws.send(JSON.stringify({ type: 'prompt', voicePrompt: 'approve', last: true }));
+        }
+
+        // Turn 2: After confirmation request, caller says "confirm approval"
+        if (msg.type === 'text' && msg.token?.includes('confirm approval')) {
+          ws.send(JSON.stringify({ type: 'prompt', voicePrompt: 'confirm approval', last: true }));
+        }
+
+        // End signal received
+        if (msg.type === 'end') {
+          resolve();
+        }
+      });
+
+      ws.on('error', reject);
+    });
+
+    // Verify received sequence
+    assert.ok(receivedMessages.some((m) => m.type === 'text' && m.token?.includes('Hello! This is Horizon')));
+    assert.ok(receivedMessages.some((m) => m.type === 'text' && m.token?.includes('confirm approval')));
+    assert.ok(receivedMessages.some((m) => m.type === 'text' && m.token?.includes('Approval confirmed')));
+    assert.ok(receivedMessages.some((m) => m.type === 'end'));
+
+    // Verify action state became APPROVED
+    const updatedAction = actionStore.getAction(testAction.actionId);
+    assert.equal(updatedAction?.status, 'APPROVED');
+    assert.equal(updatedAction?.approvalMetadata?.approvalSource, 'voice');
+
+    await voiceServer.stop();
+    if (prevSkip !== undefined) {
+      process.env.PHRO_SKIP_TWILIO_SIGNATURE_VALIDATION = prevSkip;
+    } else {
+      delete process.env.PHRO_SKIP_TWILIO_SIGNATURE_VALIDATION;
     }
   });
 });

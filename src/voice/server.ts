@@ -1,8 +1,11 @@
+import 'dotenv/config';
 import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { URL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { defaultVoiceStore, type VoiceStore } from './store.js';
 import { defaultActionStore, type ActionStore } from '../actions/store.js';
+import { type ActionExecutor, DefaultActionExecutor } from '../actions/executor.js';
 import {
   generateConversationRelayTwiML,
   validateTwilioSignature,
@@ -11,6 +14,12 @@ import {
   getInitialGreeting,
   handleVoiceUtterance,
 } from './conversation.js';
+import {
+  fetchEligibleInboxMessages,
+  formatMailboxGreeting,
+  type EligibleInboxMessage,
+} from './mailbox.js';
+import { getAuthenticatedClient, getExpectedAccount } from '../auth.js';
 
 export interface VoiceServerOptions {
   port?: number;
@@ -18,15 +27,30 @@ export interface VoiceServerOptions {
   actionStore?: ActionStore;
   publicBaseUrl?: string;
   publicWssUrl?: string;
+  endCallBufferMs?: number;
+  executor?: ActionExecutor;
+  mailboxMessages?: EligibleInboxMessage[];
+  draftCreator?: (params: {
+    to: string;
+    subject: string;
+    bodyText: string;
+    threadId?: string;
+  }) => Promise<{ draftId: string; messageId?: string; threadId?: string }>;
 }
 
 /**
  * Creates and configures the HTTP and WebSocket server for Twilio ConversationRelay
  */
 export function createVoiceServer(options: VoiceServerOptions = {}) {
-  const port = options.port || Number.parseInt(process.env.PHRO_VOICE_PORT || '3100', 10);
+  const port = options.port !== undefined ? options.port : Number.parseInt(process.env.PHRO_VOICE_PORT || '3100', 10);
   const voiceStore = options.voiceStore || defaultVoiceStore;
   const actionStore = options.actionStore || defaultActionStore;
+  const executor =
+    options.executor !== undefined
+      ? options.executor
+      : options.actionStore
+      ? undefined
+      : new DefaultActionExecutor();
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -111,6 +135,9 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
         if (sessionId) {
           const session = voiceStore.getSession(sessionId);
           if (session) {
+            console.log(
+              `[voice:server] [session:${sessionId}] Status callback: CallSid=${callSid || 'n/a'}, CallStatus=${callStatus}`
+            );
             if (callStatus === 'in-progress' && session.status === 'CALL_REQUESTED') {
               voiceStore.updateSessionStatus(sessionId, 'ACTIVE', { callSid });
             } else if (callStatus === 'completed') {
@@ -201,26 +228,79 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
       return;
     }
 
-    const action = actionStore.getAction(session.actionId);
-    if (!action) {
+    const isMailboxMode = session.actionId === 'mailbox' || session.metadata?.mode === 'mailbox';
+    const action = isMailboxMode ? null : actionStore.getAction(session.actionId);
+    if (!isMailboxMode && !action) {
       ws.close(1008, 'Associated action not found');
       return;
     }
 
+    console.log(
+      `[voice:server] [session:${sessionId}] WebSocket connected. ${isMailboxMode ? 'Mailbox review session' : `Action: ${action?.actionId} (${action?.status})`}`
+    );
     voiceStore.updateSessionStatus(session.sessionId, 'CONNECTED');
+
+    // Keep-alive ping interval to prevent proxy/tunnel idle disconnects
+    const pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.ping();
+      }
+    }, 20000);
+
+    let isEnding = false;
 
     ws.on('message', async (data: Buffer | string) => {
       try {
         const raw = typeof data === 'string' ? data : data.toString('utf-8');
         const msg = JSON.parse(raw);
+        console.log(`[voice:server] [session:${sessionId}] Received ConversationRelay message type: ${msg.type}`);
 
         // Handle Twilio ConversationRelay message types
         if (msg.type === 'setup') {
           const callSid = msg.callSid || session.callSid;
           voiceStore.updateSessionStatus(session.sessionId, 'ACTIVE', { callSid });
 
-          // Speak initial greeting
-          const greeting = getInitialGreeting(action);
+          if (isMailboxMode) {
+            let messages =
+              options.mailboxMessages ||
+              (session.metadata?.availableMessages as EligibleInboxMessage[]) ||
+              [];
+
+            if (messages.length === 0) {
+              try {
+                const auth = await getAuthenticatedClient('business');
+                const expectedEmail = getExpectedAccount('business');
+                messages = await fetchEligibleInboxMessages(auth, { businessEmail: expectedEmail });
+              } catch (err) {
+                console.error('[voice:server] Failed to fetch mailbox messages:', err);
+              }
+            }
+
+            const greeting = formatMailboxGreeting(messages);
+            console.log(`[voice:server] [session:${sessionId}] Transitioning conversationState -> MAILBOX_SELECTING, sending mailbox greeting`);
+            voiceStore.updateSessionMetadata(session.sessionId, {
+              ...(session.metadata || {}),
+              mode: 'mailbox',
+              availableMessages: messages,
+            });
+            voiceStore.updateConversationState(session.sessionId, 'MAILBOX_SELECTING', {
+              lastSpokenText: greeting,
+              reason: 'Mailbox greeting sent on connection',
+            });
+
+            voiceStore.appendTranscript(session.sessionId, {
+              role: 'agent',
+              text: greeting,
+              timestamp: new Date().toISOString(),
+            });
+
+            sendRelayText(ws, greeting);
+            return;
+          }
+
+          // Single action greeting
+          const greeting = getInitialGreeting(action!);
+          console.log(`[voice:server] [session:${sessionId}] Transitioning conversationState -> READY, sending greeting`);
           voiceStore.updateConversationState(session.sessionId, 'READY', {
             lastSpokenText: greeting,
             reason: 'Greeting sent on connection',
@@ -236,14 +316,46 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
           return;
         }
 
-        if (msg.type === 'prompt' && msg.voicePrompt) {
+        if (msg.type === 'prompt') {
+          // If interim STT chunk (last === false), wait for the complete prompt
+          if (msg.last === false) {
+            console.log(`[voice:server] [session:${sessionId}] Interim prompt chunk ignored (waiting for last: true)`);
+            return;
+          }
+
+          const utterance = typeof msg.voicePrompt === 'string' ? msg.voicePrompt.trim() : '';
+          if (!utterance) {
+            console.log(`[voice:server] [session:${sessionId}] Empty prompt received, ignoring`);
+            return;
+          }
+
+          if (isEnding) {
+            console.log(`[voice:server] [session:${sessionId}] Ignoring prompt because call is already terminating`);
+            return;
+          }
+
           const freshSession = voiceStore.getSession(sessionId) || session;
+          console.log(`[voice:server] [session:${sessionId}] Processing prompt in state ${freshSession.conversationState}`);
           const turn = await handleVoiceUtterance({
             session: freshSession,
-            utterance: msg.voicePrompt,
+            utterance,
             voiceStore,
             actionStore,
+            executor,
+            draftCreator: options.draftCreator,
+            onProgress: (progressText) => {
+              console.log(`[voice:server] [session:${sessionId}] Spoken progress: "${progressText}"`);
+              voiceStore.appendTranscript(session.sessionId, {
+                role: 'agent',
+                text: progressText,
+                timestamp: new Date().toISOString(),
+              });
+              sendRelayText(ws, progressText);
+            },
           });
+
+          const stateAfter = voiceStore.getSession(sessionId)?.conversationState;
+          console.log(`[voice:server] [session:${sessionId}] Handled utterance -> state: ${stateAfter}, endCall: ${turn.endCall}`);
 
           voiceStore.appendTranscript(session.sessionId, {
             role: 'agent',
@@ -254,34 +366,72 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
           sendRelayText(ws, turn.responseText);
 
           if (turn.endCall) {
-            sendRelayEnd(ws);
-            voiceStore.updateSessionStatus(session.sessionId, 'COMPLETED');
-            ws.close(1000, 'Call completed normally');
+            isEnding = true;
+            // Allow adequate time for ConversationRelay TTS synthesis & verbal playback before sending end
+            const playbackBufferMs =
+              options.endCallBufferMs !== undefined
+                ? options.endCallBufferMs
+                : Math.max(3500, Math.min(8000, turn.responseText.length * 60));
+            const graceTimeoutMs =
+              options.endCallBufferMs !== undefined ? Math.min(50, options.endCallBufferMs) : 1500;
+
+            console.log(
+              `[voice:server] [session:${sessionId}] Call completion initiated. Playing verbal acknowledgement (buffer: ${playbackBufferMs}ms)...`
+            );
+            setTimeout(() => {
+              if (ws.readyState === WebSocket.OPEN) {
+                console.log(`[voice:server] [session:${sessionId}] Sending ConversationRelay end message`);
+                sendRelayEnd(ws);
+                // Give Twilio a short grace window to complete teardown
+                setTimeout(() => {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    console.log(`[voice:server] [session:${sessionId}] Gracefully closing WebSocket`);
+                    ws.close(1000, 'Call completed normally');
+                  }
+                }, graceTimeoutMs);
+              }
+              voiceStore.updateSessionStatus(session.sessionId, 'COMPLETED');
+            }, playbackBufferMs);
           }
           return;
         }
 
         if (msg.type === 'interrupt') {
-          // Caller interrupted audio output; ConversationRelay handles audio cutoff
+          console.log(`[voice:server] [session:${sessionId}] Caller interrupted audio playback`);
+          return;
+        }
+
+        if (msg.type === 'error') {
+          console.error(`[voice:server] [session:${sessionId}] ConversationRelay error:`, msg.description || msg);
+          return;
+        }
+
+        if (msg.type === 'dtmf') {
+          console.log(`[voice:server] [session:${sessionId}] DTMF received: ${msg.digit || 'unknown'}`);
           return;
         }
       } catch (err: unknown) {
         const errStr = err instanceof Error ? err.message : String(err);
-        console.error(`[voice:server] Error processing message: ${errStr}`);
+        console.error(`[voice:server] [session:${sessionId}] Error processing message: ${errStr}`);
       }
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
+      console.log(
+        `[voice:server] [session:${sessionId}] WebSocket closed (code: ${code}, reason: ${reason?.toString() || 'none'})`
+      );
+      clearInterval(pingInterval);
       const freshSession = voiceStore.getSession(sessionId);
       if (freshSession && freshSession.status !== 'COMPLETED' && freshSession.status !== 'FAILED') {
         voiceStore.updateSessionStatus(sessionId, 'COMPLETED', {
-          reason: 'WebSocket closed',
+          reason: `WebSocket closed (${code})`,
         });
       }
     });
 
     ws.on('error', (err) => {
-      console.error(`[voice:server] WebSocket error on session ${sessionId}:`, err);
+      console.error(`[voice:server] [session:${sessionId}] WebSocket error:`, err);
+      clearInterval(pingInterval);
       voiceStore.updateSessionStatus(sessionId, 'FAILED', {
         error: err.message,
       });
@@ -295,6 +445,7 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
         console.log(`       PHRO Voice Gateway (PHRO-003)         `);
         console.log(`==============================================`);
         console.log(`Server listening on port ${port}`);
+        console.log(`TWILIO_AUTH_TOKEN present: ${process.env.TWILIO_AUTH_TOKEN ? 'YES' : 'NO'}`);
         console.log(`HTTP Endpoints:`);
         console.log(`  POST /voice/twiml?sessionId=<sessionId>`);
         console.log(`  POST /voice/status?sessionId=<sessionId>`);
@@ -315,7 +466,12 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
     });
   }
 
-  return { server, wss, port, start, stop };
+  function getPort(): number {
+    const addr = server.address() as AddressInfo | null;
+    return addr?.port || port;
+  }
+
+  return { server, wss, port, getPort, start, stop };
 }
 
 function sendRelayText(ws: WebSocket, text: string): void {
