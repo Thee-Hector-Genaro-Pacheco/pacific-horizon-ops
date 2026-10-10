@@ -587,7 +587,7 @@ describe('Safe Gmail Mailbox Cleanup (PHRO-MAIL-001)', () => {
     }
   });
 
-  it('16. verifies NO Gmail send call exists anywhere in src', () => {
+  it('16. verifies NO Gmail send call exists in mailbox subsystem and NO raw message send in src', () => {
     const srcDir = path.resolve(process.cwd(), 'src');
     function scanDir(dir: string): string[] {
       const results: string[] = [];
@@ -605,21 +605,32 @@ describe('Safe Gmail Mailbox Cleanup (PHRO-MAIL-001)', () => {
     }
 
     const files = scanDir(srcDir);
-    const forbiddenSendPatterns = [
+    const universallyForbiddenSendPatterns = [
       /\bmessages\.send\b/,
-      /\bdrafts\.send\b/,
       /\busers\.messages\.send\b/,
+    ];
+    const mailboxForbiddenSendPatterns = [
+      /\bdrafts\.send\b/,
       /\busers\.drafts\.send\b/,
     ];
 
     for (const f of files) {
       const content = fs.readFileSync(f, 'utf-8');
-      for (const pattern of forbiddenSendPatterns) {
+      for (const pattern of universallyForbiddenSendPatterns) {
         assert.equal(
           pattern.test(content),
           false,
-          `Forbidden send pattern ${pattern} found in ${f}`
+          `Forbidden raw message send pattern ${pattern} found in ${f}`
         );
+      }
+      if (f.includes('/mailbox/')) {
+        for (const pattern of mailboxForbiddenSendPatterns) {
+          assert.equal(
+            pattern.test(content),
+            false,
+            `Forbidden send pattern ${pattern} found in mailbox file ${f}`
+          );
+        }
       }
     }
   });

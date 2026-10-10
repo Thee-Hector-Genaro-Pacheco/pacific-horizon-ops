@@ -156,6 +156,26 @@ export async function executeCleanupPlan(
   for (const candidate of plan.candidates) {
     console.log(`Checking message ${candidate.messageId} ("${candidate.subject}")...`);
 
+    // Enforce individual review decisions for review-enabled plans
+    const hasReview = Boolean(
+      plan.hasInteractiveReview ||
+      plan.candidates.some((c) => c.reviewDecision !== undefined)
+    );
+
+    if (hasReview && candidate.reviewDecision !== 'APPROVE') {
+      const skipReason =
+        candidate.reviewDecision === 'KEEP'
+          ? 'Operator marked KEEP during interactive review'
+          : candidate.reviewDecision === 'SKIP'
+          ? 'Operator marked SKIP during interactive review'
+          : 'Candidate was not approved during interactive review';
+      console.log(`  [REVIEW SKIP] Message skipped by review decision: ${skipReason}`);
+      candidate.executionStatus = 'SKIPPED';
+      candidate.executionReason = skipReason;
+      skippedCount++;
+      continue;
+    }
+
     // Refetch current Gmail metadata to detect recent state or label changes
     let currentMetadata: EmailMetadataForClassification | null = null;
     try {

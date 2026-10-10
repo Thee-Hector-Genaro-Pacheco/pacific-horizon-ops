@@ -50,6 +50,9 @@ export const CandidateExecutionStatusSchema = z.enum([
 ]);
 export type CandidateExecutionStatus = z.infer<typeof CandidateExecutionStatusSchema>;
 
+export const ReviewDecisionSchema = z.enum(['APPROVE', 'KEEP', 'SKIP']);
+export type ReviewDecision = z.infer<typeof ReviewDecisionSchema>;
+
 export const MailboxCleanupCandidateSchema = z.object({
   messageId: z.string(),
   threadId: z.string(),
@@ -64,6 +67,8 @@ export const MailboxCleanupCandidateSchema = z.object({
   recommendedAction: RecommendedActionSchema,
   executionStatus: CandidateExecutionStatusSchema.optional(),
   executionReason: z.string().optional(),
+  reviewDecision: ReviewDecisionSchema.optional(),
+  reviewedAt: z.string().optional(),
 });
 export type MailboxCleanupCandidate = z.infer<typeof MailboxCleanupCandidateSchema>;
 
@@ -82,6 +87,9 @@ export const MailboxCleanupPlanSchema = z.object({
   candidates: z.array(MailboxCleanupCandidateSchema),
   excludedCount: z.number(),
   excluded: z.array(MailboxProtectedMessageSchema).optional(),
+  hasInteractiveReview: z.boolean().optional(),
+  reviewedAt: z.string().optional(),
+  reviewedBy: z.string().optional(),
   approvedAt: z.string().optional(),
   approvedBy: z.string().optional(),
   executedAt: z.string().optional(),

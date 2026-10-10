@@ -15,6 +15,7 @@
     "mailbox:scan": "tsx src/mailbox/cli.ts scan",
     "mailbox:plans": "tsx src/mailbox/cli.ts plans",
     "mailbox:plan": "tsx src/mailbox/cli.ts plan",
+    "mailbox:review": "tsx src/mailbox/cli.ts review",
     "mailbox:approve": "tsx src/mailbox/cli.ts approve",
     "mailbox:execute": "tsx src/mailbox/cli.ts execute",
     "test": "tsx --test test/**/*.test.ts",

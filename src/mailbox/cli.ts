@@ -5,6 +5,7 @@ import { resolveQuery, QUERY_PRESETS } from './queries.js';
 import { scanMailbox } from './scanner.js';
 import { createCleanupPlan } from './planner.js';
 import { executeCleanupPlan } from './executor.js';
+import { reviewPlan } from './reviewer.js';
 
 function printHelp(): void {
   console.log(`
@@ -21,6 +22,9 @@ Commands:
 
   plan       View details and candidates of a specific plan
              Usage: npm run mailbox:plan -- <planId>
+
+  review     Interactively review cleanup candidates before plan approval (Never mutates Gmail)
+             Usage: npm run mailbox:review -- <planId>
 
   approve    Approve a cleanup plan for execution (Never mutates Gmail)
              Usage: npm run mailbox:approve -- <planId>
@@ -84,9 +88,10 @@ async function handleScan(args: string[]): Promise<void> {
   const profilePrefix = `PHRO_GMAIL_PROFILE=${plan.gmailProfile || 'business'}`;
   console.log(`\nNext Steps:`);
   console.log(`  1. Inspect full plan: ${profilePrefix} npm run mailbox:plan -- ${plan.id}`);
-  console.log(`  2. Approve plan:      ${profilePrefix} npm run mailbox:approve -- ${plan.id}`);
-  console.log(`  3. Dry-run execute:   ${profilePrefix} npm run mailbox:execute -- ${plan.id} --dry-run`);
-  console.log(`  4. Live execute:      ${profilePrefix} npm run mailbox:execute -- ${plan.id}\n`);
+  console.log(`  2. Review candidates: ${profilePrefix} npm run mailbox:review -- ${plan.id}`);
+  console.log(`  3. Approve plan:      ${profilePrefix} npm run mailbox:approve -- ${plan.id}`);
+  console.log(`  4. Dry-run execute:   ${profilePrefix} npm run mailbox:execute -- ${plan.id} --dry-run`);
+  console.log(`  5. Live execute:      ${profilePrefix} npm run mailbox:execute -- ${plan.id}\n`);
 }
 
 function handlePlans(): void {
@@ -146,6 +151,9 @@ export function handlePlanDetail(
   console.log(`Status:      ${plan.status}`);
   console.log(`Query:       "${plan.query}"`);
   console.log(`Created:     ${new Date(plan.createdAt).toLocaleString()}`);
+  if (plan.hasInteractiveReview) {
+    console.log(`Reviewed At: ${plan.reviewedAt} by ${plan.reviewedBy || 'cli:user'}`);
+  }
   if (plan.approvedAt) console.log(`Approved At: ${plan.approvedAt} by ${plan.approvedBy}`);
   if (plan.executedAt) console.log(`Executed At: ${plan.executedAt}`);
 
@@ -160,6 +168,7 @@ export function handlePlanDetail(
       Category: c.category,
       Flags: c.protectionFlags.join(', ') || 'NONE',
       Action: c.recommendedAction,
+      Review: c.reviewDecision || (plan.hasInteractiveReview ? 'UNREVIEWED' : 'N/A'),
       ExecStatus: c.executionStatus || 'PENDING',
     }));
     console.table(candidateRows);
@@ -184,6 +193,31 @@ export function handlePlanDetail(
     console.table(protectedRows);
   }
   console.log('');
+}
+
+export async function handleReview(
+  planId?: string,
+  store: MailboxStore = defaultMailboxStore
+): Promise<void> {
+  if (!planId) {
+    console.error('Error: Missing planId argument.');
+    console.error('Usage: npm run mailbox:review -- <planId>');
+    if (process.env.NODE_ENV !== 'test') {
+      process.exit(1);
+    }
+    return;
+  }
+
+  try {
+    await reviewPlan(planId, { store });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`\nReview Error: ${msg}\n`);
+    if (process.env.NODE_ENV !== 'test') {
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 
 function handleApprove(planId?: string): void {
@@ -243,6 +277,9 @@ async function main(): Promise<void> {
       break;
     case 'plan':
       handlePlanDetail(args[1]);
+      break;
+    case 'review':
+      await handleReview(args[1]);
       break;
     case 'approve':
       handleApprove(args[1]);
