@@ -18,6 +18,7 @@
     "mailbox:review": "tsx src/mailbox/cli.ts review",
     "mailbox:approve": "tsx src/mailbox/cli.ts approve",
     "mailbox:execute": "tsx src/mailbox/cli.ts execute",
+    "dashboard:serve": "tsx src/dashboard/server.ts",
     "test": "tsx --test test/**/*.test.ts",
     "build": "tsc"
   },

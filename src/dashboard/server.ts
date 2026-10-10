@@ -1,0 +1,380 @@
+import 'dotenv/config';
+import fs from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
+import type { AddressInfo } from 'node:net';
+import { URL } from 'node:url';
+import { resolveTokenPath, getExpectedAccount } from '../auth.js';
+import { loadSnapshot, snapshotFingerprint, DATA_FILES } from './sources.js';
+import { buildReadModel, type ReadModel } from './readModel.js';
+import type { ChangeEventDTO, Envelope, SystemComponentDTO, SystemHealthDTO } from './types.js';
+
+/**
+ * Pacific Rising Ops — Command Center API.
+ *
+ * Read-only by design: every route is GET, nothing here can approve, send, call or
+ * mutate store files. Approvals continue to flow exclusively through the existing
+ * voice and CLI paths, which own the deterministic action state machine.
+ *
+ * Binds to 127.0.0.1 by default; the API serves owner business data and has no auth layer.
+ */
+
+export interface DashboardServerOptions {
+  port?: number;
+  host?: string;
+  dataDir?: string;
+  baseDir?: string;
+  staticDir?: string | null;
+  voiceHealthUrl?: string | null;
+  now?: () => number;
+  env?: NodeJS.ProcessEnv;
+}
+
+const RECENT_SUCCESS_MS = 24 * 60 * 60 * 1000;
+
+const SECURITY_HEADERS: Record<string, string> = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'X-Frame-Options': 'DENY',
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Content-Security-Policy':
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+};
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.json': 'application/json; charset=utf-8',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
+};
+
+export function createDashboardServer(options: DashboardServerOptions = {}) {
+  const env = options.env ?? process.env;
+  const port = options.port ?? Number.parseInt(env.PHRO_DASHBOARD_PORT || '3200', 10);
+  const host = options.host ?? env.PHRO_DASHBOARD_HOST ?? '127.0.0.1';
+  const baseDir = options.baseDir ?? process.cwd();
+  const dataDir = options.dataDir ?? path.resolve(baseDir, 'data');
+  const staticDir =
+    options.staticDir === undefined ? path.resolve(baseDir, 'web', 'dist') : options.staticDir;
+  const voicePort = env.PHRO_VOICE_PORT || '3100';
+  const voiceHealthUrl =
+    options.voiceHealthUrl === undefined ? `http://127.0.0.1:${voicePort}/health` : options.voiceHealthUrl;
+  const now = options.now ?? Date.now;
+
+  let cache: { fingerprint: string; model: ReadModel; builtAt: number } | null = null;
+
+  function model(): ReadModel {
+    const fingerprint = snapshotFingerprint(dataDir);
+    // Rebuild when files change, and at least every 30s so time-relative state (presence, staleness) stays honest.
+    if (!cache || cache.fingerprint !== fingerprint || now() - cache.builtAt > 30_000) {
+      const ownerEmails = [env.PHRO_GMAIL_BUSINESS_ACCOUNT, env.PHRO_GMAIL_PERSONAL_ACCOUNT].filter(
+        (e): e is string => !!e?.trim()
+      );
+      cache = {
+        fingerprint,
+        model: buildReadModel(loadSnapshot(dataDir), { now: now(), ownerEmails }),
+        builtAt: now(),
+      };
+    }
+    return cache.model;
+  }
+
+  async function probeVoice(): Promise<boolean> {
+    if (!voiceHealthUrl) return false;
+    try {
+      const res = await fetch(voiceHealthUrl, { signal: AbortSignal.timeout(800) });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  function hasRefreshableToken(): boolean {
+    try {
+      const { tokenPath } = resolveTokenPath('business', baseDir);
+      if (!fs.existsSync(tokenPath)) return false;
+      const parsed = JSON.parse(fs.readFileSync(tokenPath, 'utf-8')) as Record<string, unknown>;
+      // Only presence is checked; token values never leave this function.
+      return typeof parsed.refresh_token === 'string' && parsed.refresh_token.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  async function health(): Promise<SystemHealthDTO> {
+    const m = model();
+    const checkedAt = new Date(now()).toISOString();
+    const t = now();
+    const within = (iso: string | null | undefined) => !!iso && t - new Date(iso).getTime() < RECENT_SUCCESS_MS;
+
+    const lastGmailSuccess = m.activity.find(
+      (a) => a.kind === 'email_sent' || a.kind === 'draft_generated' || a.kind === 'email_triaged'
+    )?.at;
+    const tokenOk = hasRefreshableToken();
+    const accountBound = !!getExpectedAccount('business');
+    const gmail: SystemComponentDTO = {
+      key: 'gmail',
+      label: 'Gmail',
+      status: !tokenOk ? 'offline' : within(lastGmailSuccess) ? 'online' : 'configured',
+      detail: !tokenOk
+        ? 'No business token on file'
+        : within(lastGmailSuccess)
+          ? 'Business account · recent activity'
+          : accountBound
+            ? 'Business account bound · idle'
+            : 'Token on file · account binding not set',
+      checkedAt,
+    };
+
+    const twilioConfigured = !!(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_PHONE_NUMBER_E164);
+    const lastConnectedCall = m.calls.find((c) => c.relay === 'connected');
+    const twilio: SystemComponentDTO = {
+      key: 'twilio',
+      label: 'Twilio',
+      status: !twilioConfigured ? 'offline' : within(lastConnectedCall?.startedAt) ? 'online' : 'configured',
+      detail: !twilioConfigured
+        ? 'Credentials not configured'
+        : within(lastConnectedCall?.startedAt)
+          ? 'Calls connecting'
+          : 'Credentials present',
+      checkedAt,
+    };
+
+    const voiceUp = await probeVoice();
+    const voice: SystemComponentDTO = {
+      key: 'voice',
+      label: 'Pacific Ops',
+      status: voiceUp ? 'online' : 'offline',
+      detail: voiceUp ? 'Voice gateway responding' : 'Voice gateway not running locally',
+      checkedAt,
+    };
+
+    const agentConfigured = !!env.ANTHROPIC_API_KEY;
+    const agent: SystemComponentDTO = {
+      key: 'agent',
+      label: 'Agent',
+      status: agentConfigured ? (within(m.commandCenter.lastAgentRunAt) ? 'online' : 'configured') : 'offline',
+      detail: agentConfigured
+        ? m.commandCenter.lastAgentRunAt
+          ? 'Classifier ready'
+          : 'Classifier ready · no runs yet'
+        : 'Model key not configured',
+      checkedAt,
+    };
+
+    const components = [gmail, twilio, voice, agent];
+    const offline = components.filter((c) => c.status === 'offline').length;
+    return {
+      overall: offline === 0 ? 'healthy' : offline >= 3 ? 'down' : 'degraded',
+      components,
+    };
+  }
+
+  /* ---------------------------- SSE ---------------------------- */
+
+  const clients = new Set<http.ServerResponse>();
+  let watcher: fs.FSWatcher | null = null;
+  let debounce: NodeJS.Timeout | null = null;
+  let pendingTopics = new Set<ChangeEventDTO['topics'][number]>();
+  const heartbeat = setInterval(() => {
+    for (const res of clients) res.write(': keep-alive\n\n');
+  }, 25_000);
+  heartbeat.unref();
+
+  function topicsFor(fileName: string): ChangeEventDTO['topics'] {
+    if (fileName.startsWith(DATA_FILES.actions) || fileName.startsWith(DATA_FILES.actionEvents)) {
+      return ['actions', 'inbox', 'activity'];
+    }
+    if (fileName.startsWith(DATA_FILES.sessions) || fileName.startsWith(DATA_FILES.voiceEvents)) {
+      return ['calls', 'activity', 'inbox'];
+    }
+    if (fileName.startsWith(DATA_FILES.runs)) return ['inbox', 'activity'];
+    if (fileName.startsWith('mailbox-cleanup')) return ['activity'];
+    return [];
+  }
+
+  function ensureWatcher() {
+    if (watcher || !fs.existsSync(dataDir)) return;
+    try {
+      watcher = fs.watch(dataDir, (_event, fileName) => {
+        if (!fileName) return;
+        const name = fileName.toString();
+        if (name.includes('.tmp.')) return;
+        for (const topic of topicsFor(name)) pendingTopics.add(topic);
+        if (pendingTopics.size === 0) return;
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          const payload: ChangeEventDTO = { at: new Date(now()).toISOString(), topics: [...pendingTopics] };
+          pendingTopics = new Set();
+          for (const res of clients) res.write(`event: change\ndata: ${JSON.stringify(payload)}\n\n`);
+        }, 250);
+      });
+      watcher.on('error', () => {
+        watcher?.close();
+        watcher = null;
+      });
+    } catch {
+      watcher = null;
+    }
+  }
+
+  /* --------------------------- Routes --------------------------- */
+
+  function send<T>(res: http.ServerResponse, status: number, data: T) {
+    const envelope: Envelope<T> = { data, generatedAt: new Date(now()).toISOString(), source: 'live' };
+    res.writeHead(status, {
+      ...SECURITY_HEADERS,
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
+    res.end(JSON.stringify(envelope));
+  }
+
+  function notFound(res: http.ServerResponse, what = 'Not found') {
+    res.writeHead(404, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: what }));
+  }
+
+  async function handleApi(pathname: string, url: URL, res: http.ServerResponse, req: http.IncomingMessage) {
+    const parts = pathname.replace(/^\/api\/?/, '').split('/').filter(Boolean);
+    const [resource, id] = parts.map(decodeURIComponent);
+    const m = model();
+
+    switch (resource) {
+      case 'health':
+        return send(res, 200, await health());
+      case 'command-center':
+        return send(res, 200, m.commandCenter);
+      case 'inbox': {
+        if (!id) return send(res, 200, m.inbox);
+        const item = m.inbox.find((i) => i.id === id);
+        return item ? send(res, 200, item) : notFound(res);
+      }
+      case 'actions': {
+        if (!id) return send(res, 200, m.actions);
+        const action = m.actions.find((a) => a.id === id);
+        return action ? send(res, 200, action) : notFound(res);
+      }
+      case 'calls': {
+        if (!id) return send(res, 200, m.calls);
+        const call = m.calls.find((c) => c.id === id);
+        return call ? send(res, 200, call) : notFound(res);
+      }
+      case 'activity': {
+        const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 100, 1), 500);
+        return send(res, 200, m.activity.slice(0, limit));
+      }
+      case 'leads':
+        return send(res, 200, m.leads);
+      case 'customers': {
+        if (!id) return send(res, 200, m.customers);
+        const customer = m.customers.find((c) => c.id === id);
+        return customer ? send(res, 200, customer) : notFound(res);
+      }
+      case 'analytics':
+        return send(res, 200, m.analytics);
+      case 'stream': {
+        ensureWatcher();
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-store',
+          Connection: 'keep-alive',
+        });
+        res.write('retry: 5000\n\n');
+        res.write(`event: ready\ndata: ${JSON.stringify({ at: new Date(now()).toISOString() })}\n\n`);
+        clients.add(res);
+        req.on('close', () => clients.delete(res));
+        return;
+      }
+      default:
+        return notFound(res);
+    }
+  }
+
+  function serveStatic(pathname: string, res: http.ServerResponse) {
+    if (!staticDir || !fs.existsSync(staticDir)) {
+      res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Pacific Rising Ops API is running. Build the Command Center with `npm run web:build`, or run `npm run web:dev`.');
+      return;
+    }
+    const root = path.resolve(staticDir);
+    const requested = path.resolve(root, `.${decodeURIComponent(pathname)}`);
+    const inside = requested === root || requested.startsWith(root + path.sep);
+    let target = inside && fs.existsSync(requested) && fs.statSync(requested).isFile() ? requested : null;
+    // SPA fallback for client-side routes (no extension).
+    if (!target && inside && !path.extname(pathname)) target = path.join(root, 'index.html');
+    if (!target || !fs.existsSync(target)) return notFound(res);
+
+    const ext = path.extname(target);
+    const immutable = target.includes(`${path.sep}assets${path.sep}`);
+    res.writeHead(200, {
+      ...SECURITY_HEADERS,
+      'Content-Type': MIME[ext] ?? 'application/octet-stream',
+      'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+    });
+    fs.createReadStream(target).pipe(res);
+  }
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405, { ...SECURITY_HEADERS, Allow: 'GET, HEAD', 'Content-Type': 'text/plain' });
+        res.end('Method Not Allowed: the Command Center API is read-only');
+        return;
+      }
+      if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
+        await handleApi(url.pathname, url, res, req);
+        return;
+      }
+      serveStatic(url.pathname, res);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[dashboard] ${msg}`);
+      if (!res.headersSent) {
+        res.writeHead(500, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
+      }
+      res.end(JSON.stringify({ error: 'Internal error' }));
+    }
+  });
+
+  function start(): Promise<void> {
+    return new Promise((resolve) => {
+      server.listen(port, host, () => {
+        console.log(`Pacific Rising Ops — Command Center API on http://${host}:${getPort()} (read-only)`);
+        resolve();
+      });
+    });
+  }
+
+  function stop(): Promise<void> {
+    clearInterval(heartbeat);
+    if (debounce) clearTimeout(debounce);
+    watcher?.close();
+    for (const res of clients) res.end();
+    clients.clear();
+    return new Promise((resolve) => server.close(() => resolve()));
+  }
+
+  function getPort(): number {
+    const addr = server.address() as AddressInfo | null;
+    return addr?.port ?? port;
+  }
+
+  return { server, start, stop, getPort, health, model };
+}
+
+if (process.argv[1]?.endsWith(`dashboard${path.sep}server.ts`) || process.argv[1]?.endsWith(`dashboard${path.sep}server.js`)) {
+  createDashboardServer()
+    .start()
+    .catch((err) => {
+      console.error('Failed to start Command Center API:', err);
+      process.exit(1);
+    });
+}
