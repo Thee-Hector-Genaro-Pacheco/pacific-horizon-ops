@@ -20,6 +20,8 @@ import {
   type EligibleInboxMessage,
 } from './mailbox.js';
 import { getAuthenticatedClient, getExpectedAccount } from '../auth.js';
+import { PacificOpsRuntimeStore, estimatePlaybackMs } from '../runtime/pacificOpsRuntime.js';
+import { VoicePresenceReporter, observeExecutor, type ReporterOptions, type RuntimeSink } from './presenceReporter.js';
 
 export interface VoiceServerOptions {
   port?: number;
@@ -36,6 +38,12 @@ export interface VoiceServerOptions {
     bodyText: string;
     threadId?: string;
   }) => Promise<{ draftId: string; messageId?: string; threadId?: string }>;
+  /**
+   * Where Pacific Ops runtime (presence) events go. Defaults to a runtime store beside the
+   * voice store's data. Pass null to disable. Events are observational only.
+   */
+  runtime?: RuntimeSink | null;
+  presenceOptions?: ReporterOptions;
 }
 
 /**
@@ -51,6 +59,9 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
       : options.actionStore
       ? undefined
       : new DefaultActionExecutor();
+  const runtimeSink =
+    options.runtime === undefined ? new PacificOpsRuntimeStore({ dataDir: voiceStore.getDataDir() }) : options.runtime;
+  const presence = runtimeSink ? new VoicePresenceReporter(runtimeSink, voiceStore, options.presenceOptions) : null;
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -152,6 +163,7 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
                 callSid,
                 error: `Call ended with status: ${callStatus}`,
               });
+              presence?.fault(sessionId, `Call not connected (${callStatus})`);
             }
           }
         }
@@ -239,6 +251,9 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
       `[voice:server] [session:${sessionId}] WebSocket connected. ${isMailboxMode ? 'Mailbox review session' : `Action: ${action?.actionId} (${action?.status})`}`
     );
     voiceStore.updateSessionStatus(session.sessionId, 'CONNECTED');
+    presence?.sessionConnected(sessionId);
+    // Execution is observed (not altered) so the Command Center can show EXECUTING / SUCCESS / ERROR.
+    const sessionExecutor = executor && presence ? observeExecutor(executor, presence, sessionId) : executor;
 
     // Keep-alive ping interval to prevent proxy/tunnel idle disconnects
     const pingInterval = setInterval(() => {
@@ -295,6 +310,7 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
             });
 
             sendRelayText(ws, greeting);
+            presence?.speaking(sessionId, greeting);
             return;
           }
 
@@ -313,12 +329,14 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
           });
 
           sendRelayText(ws, greeting);
+          presence?.speaking(sessionId, greeting);
           return;
         }
 
         if (msg.type === 'prompt') {
           // If interim STT chunk (last === false), wait for the complete prompt
           if (msg.last === false) {
+            if (!isEnding) presence?.ownerSpeaking(sessionId);
             console.log(`[voice:server] [session:${sessionId}] Interim prompt chunk ignored (waiting for last: true)`);
             return;
           }
@@ -336,12 +354,13 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
 
           const freshSession = voiceStore.getSession(sessionId) || session;
           console.log(`[voice:server] [session:${sessionId}] Processing prompt in state ${freshSession.conversationState}`);
+          presence?.processing(sessionId);
           const turn = await handleVoiceUtterance({
             session: freshSession,
             utterance,
             voiceStore,
             actionStore,
-            executor,
+            executor: sessionExecutor,
             draftCreator: options.draftCreator,
             onProgress: (progressText) => {
               console.log(`[voice:server] [session:${sessionId}] Spoken progress: "${progressText}"`);
@@ -351,6 +370,7 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
                 timestamp: new Date().toISOString(),
               });
               sendRelayText(ws, progressText);
+              presence?.speaking(sessionId, progressText);
             },
           });
 
@@ -364,6 +384,7 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
           });
 
           sendRelayText(ws, turn.responseText);
+          presence?.speaking(sessionId, turn.responseText, { final: turn.endCall });
 
           if (turn.endCall) {
             isEnding = true;
@@ -371,7 +392,7 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
             const playbackBufferMs =
               options.endCallBufferMs !== undefined
                 ? options.endCallBufferMs
-                : Math.max(3500, Math.min(8000, turn.responseText.length * 60));
+                : estimatePlaybackMs(turn.responseText);
             const graceTimeoutMs =
               options.endCallBufferMs !== undefined ? Math.min(50, options.endCallBufferMs) : 1500;
 
@@ -398,11 +419,13 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
 
         if (msg.type === 'interrupt') {
           console.log(`[voice:server] [session:${sessionId}] Caller interrupted audio playback`);
+          presence?.ownerSpeaking(sessionId);
           return;
         }
 
         if (msg.type === 'error') {
           console.error(`[voice:server] [session:${sessionId}] ConversationRelay error:`, msg.description || msg);
+          presence?.fault(sessionId, 'Voice relay reported an error');
           return;
         }
 
@@ -421,6 +444,7 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
         `[voice:server] [session:${sessionId}] WebSocket closed (code: ${code}, reason: ${reason?.toString() || 'none'})`
       );
       clearInterval(pingInterval);
+      presence?.sessionEnded(sessionId);
       const freshSession = voiceStore.getSession(sessionId);
       if (freshSession && freshSession.status !== 'COMPLETED' && freshSession.status !== 'FAILED') {
         voiceStore.updateSessionStatus(sessionId, 'COMPLETED', {
@@ -435,12 +459,14 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
       voiceStore.updateSessionStatus(sessionId, 'FAILED', {
         error: err.message,
       });
+      presence?.fault(sessionId, 'Voice connection error');
     });
   });
 
   function start(): Promise<void> {
     return new Promise((resolve) => {
       server.listen(port, () => {
+        presence?.gatewayOnline();
         console.log(`\n==============================================`);
         console.log(`       PHRO Voice Gateway (PHRO-003)         `);
         console.log(`==============================================`);

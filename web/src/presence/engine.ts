@@ -526,6 +526,10 @@ export class PresenceEngine {
       const rate = EASE_RATE[key] ?? 2.4;
       this.current[key] += (this.target[key] - this.current[key]) * (1 - Math.exp(-dt * rate));
     }
+    // SPEAKING without a real level: a deterministic, state-driven envelope. This is NOT
+    // audio amplitude. ConversationRelay plays TTS from Twilio straight to the phone, so
+    // the server never sees the audio. If a real level becomes available, pass it as
+    // `audioLevel` (0..1) and it replaces this envelope with no other change.
     const synthetic =
       this.current.voice > 0.01
         ? Math.max(0, 0.42 + 0.3 * Math.sin(this.time * 7.1) * Math.sin(this.time * 2.3 + 1.1) + 0.12 * Math.sin(this.time * 17.0)) * this.current.voice

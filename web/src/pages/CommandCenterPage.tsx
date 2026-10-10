@@ -16,12 +16,13 @@ import { CommunicationCard } from '../components/rows';
 import type { SystemHealthDTO } from '../data/contract';
 import { useData } from '../data/DataProvider';
 import { useResource } from '../data/useResource';
+import { runtimeHeadline, runtimeHud } from '../data/runtime';
+import { usePacificOpsRuntime } from '../data/useRuntime';
 import { cn } from '../lib/cn';
 import { relativeTime } from '../lib/format';
 import { ACTION_STATUS, HEALTH, PRESENCE_STATE } from '../lib/status';
 import { useNow } from '../lib/useNow';
 import { PacificOpsPresence, type PresenceServiceItem, type PresenceTelemetry } from '../presence/PacificOpsPresence';
-import { STATE_STATUS } from '../presence/states';
 
 function telemetryFor(health: SystemHealthDTO | undefined): PresenceTelemetry[] {
   if (!health) return [{ label: 'Systems', value: 'CHECKING', tone: 'tone-idle' }];
@@ -56,17 +57,19 @@ export function CommandCenterPage() {
   const calls = useResource((s) => s.calls.listCalls(), [], ['calls']);
 
   const counts = summary.data?.counts;
-  const presence = summary.data?.presence;
-  const presenceState = presence?.state ?? 'idle';
-  const presenceMeta = PRESENCE_STATE[presenceState];
-  const presenceTone = presenceMeta?.tone ?? 'tone-ok';
-
-  let statusLabel = STATE_STATUS[presenceState] ?? 'ONLINE';
-  if (presenceState === 'idle') {
+  // The hologram follows the live Pacific Ops runtime (real voice events), never the
+  // read-model summary or a timer. No live link means STANDBY / NO SIGNAL, not a stale state.
+  const { runtime, view } = usePacificOpsRuntime();
+  const presenceState = view.state;
+  const presenceTone =
+    view.signal === 'offline' ? 'tone-fail' : view.signal === 'degraded' ? 'tone-warn' : (PRESENCE_STATE[presenceState]?.tone ?? 'tone-ok');
+  let statusLabel = view.label;
+  if (presenceState === 'idle' && view.signal !== 'offline' && view.signal !== 'degraded') {
     if (health.data?.overall === 'down') statusLabel = 'OFFLINE';
     else if (health.data?.overall === 'degraded') statusLabel = 'DEGRADED';
-    else statusLabel = 'ONLINE';
   }
+  const sessionHud = runtimeHud(runtime, view);
+  const sessionHeadline = runtimeHeadline(runtime, view);
 
   const pending = (actions.data ?? []).filter((a) => a.status === 'AWAITING_APPROVAL');
   const inFlight = (actions.data ?? []).filter((a) => a.status === 'APPROVED' || a.status === 'EXECUTING');
@@ -151,12 +154,16 @@ export function CommandCenterPage() {
             state={presenceState}
             systemHealth={health.data?.overall}
             headline={
-              presence?.headline ??
-              (counts && counts.needsAttention > 0
-                ? `${counts.needsAttention} new business message${counts.needsAttention === 1 ? '' : 's'}`
-                : 'All systems nominal · Standby')
+              sessionHeadline ??
+              (view.signal === 'offline'
+                ? 'Command Center API unreachable · no live signal'
+                : view.signal === 'degraded'
+                  ? 'Live link interrupted · reconnecting'
+                  : counts && counts.needsAttention > 0
+                    ? `${counts.needsAttention} new business message${counts.needsAttention === 1 ? '' : 's'}`
+                    : 'Standing by')
             }
-            telemetry={telemetryFor(health.data)}
+            telemetry={sessionHud ?? telemetryFor(health.data)}
             annotations={annotations}
             services={serviceIndicators}
             hideStatusPill

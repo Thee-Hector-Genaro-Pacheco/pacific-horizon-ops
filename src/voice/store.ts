@@ -30,6 +30,11 @@ export class VoiceStore {
       options.eventsFilePath || path.join(this.dataDir, 'voice-events.jsonl');
   }
 
+  /** Directory this store persists to; sibling runtime files (e.g. Pacific Ops presence) live here too. */
+  public getDataDir(): string {
+    return this.dataDir;
+  }
+
   private ensureDir(): void {
     if (!fs.existsSync(this.dataDir)) {
       fs.mkdirSync(this.dataDir, { recursive: true });

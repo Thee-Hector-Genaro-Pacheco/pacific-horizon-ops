@@ -311,6 +311,20 @@ export interface PresenceDTO {
   liveCallId: string | null;
 }
 
+/** Live Pacific Ops runtime as resolved for display (see src/runtime/pacificOpsRuntime.ts). */
+export interface RuntimeStateDTO {
+  state: PacificOpsState;
+  sessionActive: boolean;
+  sessionId: string | null;
+  operation: 'call' | 'mailbox_review' | 'message_review' | 'draft_review' | 'approval' | 'send_email' | 'wrap_up' | null;
+  task: string | null;
+  status: string;
+  context: { senderName?: string; subject?: string } | null;
+  at: string | null;
+  settledBy: 'none' | 'outcome_elapsed' | 'stale' | 'gateway_offline' | 'no_runtime';
+  voiceGateway: 'online' | 'offline' | 'unknown';
+}
+
 export interface CommandCenterDTO {
   counts: {
     inbox: number;

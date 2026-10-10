@@ -6,6 +6,7 @@ import {
   type PacificServices,
   type RealtimeService,
 } from './services';
+import { createSseRuntime } from './runtime';
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -101,5 +102,6 @@ export function createHttpServices(base = '/api'): PacificServices {
       listActivity: (limit = 100) => getJson(`${base}/activity?limit=${limit}`, 'Activity'),
     },
     realtime: createSseRealtime(`${base}/stream`),
+    runtime: createSseRuntime(base),
   };
 }

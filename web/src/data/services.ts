@@ -9,6 +9,7 @@ import type {
   DataSourceKind,
   InboxItemDTO,
   LeadDTO,
+  RuntimeStateDTO,
   SystemHealthDTO,
 } from './contract';
 
@@ -65,6 +66,17 @@ export interface RealtimeService {
   }): () => void;
 }
 
+/**
+ * Live Pacific Ops runtime link.
+ * live: stream connected · reconnecting: stream dropped, retrying · offline: API unreachable
+ */
+export type RuntimeLink = 'connecting' | 'live' | 'reconnecting' | 'offline' | 'demo';
+
+export interface RuntimeService {
+  getState(): Promise<RuntimeStateDTO>;
+  subscribe(handlers: { onState: (state: RuntimeStateDTO) => void; onLink: (link: RuntimeLink) => void }): () => void;
+}
+
 export interface PacificServices {
   kind: DataSourceKind;
   dashboard: DashboardService;
@@ -74,6 +86,8 @@ export interface PacificServices {
   leads: LeadService;
   activity: ActivityService;
   realtime: RealtimeService;
+  /** Observational Pacific Ops runtime (voice state). Read-only, like everything here. */
+  runtime: RuntimeService;
 }
 
 export class NotFoundError extends Error {

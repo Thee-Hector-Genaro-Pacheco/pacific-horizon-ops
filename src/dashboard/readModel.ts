@@ -828,7 +828,6 @@ export function derivePresence(
     (c) => (c.status === 'CONNECTED' || c.status === 'ACTIVE') && !c.stale && now - ms(c.startedAt) < LIVE_CALL_WINDOW_MS * 6
   );
   if (liveCall) {
-    const last = liveCall.transcript[liveCall.transcript.length - 1];
     let state: PacificOpsState = 'listening';
     let headline = 'Voice link active';
     switch (liveCall.conversationState) {
@@ -851,10 +850,8 @@ export function derivePresence(
         state = 'listening';
         headline = 'Listening';
     }
-    if (last?.role === 'user' && now - ms(last.at) < 8000) {
-      state = 'thinking';
-      headline = 'Processing request';
-    }
+    // Fine-grained call state (thinking / speaking / executing) comes from the live
+    // Pacific Ops runtime stream, not from transcript timing.
     return { state, headline, reason: 'Live owner voice session', since: liveCall.startedAt, liveCallId: liveCall.id };
   }
 

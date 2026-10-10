@@ -11,6 +11,7 @@ import type {
   InboxStatus,
   LeadDTO,
   LeadStage,
+  RuntimeStateDTO,
   SystemHealthDTO,
   TimelineEventDTO,
 } from './contract';
@@ -699,5 +700,29 @@ export function createDemoServices(latencyMs = 220): PacificServices {
         return () => {};
       },
     },
+    // DEMO: a fixed runtime derived from the sample command center. No voice session is ever active.
+    runtime: {
+      getState: () => wait(() => demoRuntime(data.commandCenter.presence.state)),
+      subscribe({ onState, onLink }) {
+        onLink('demo');
+        onState(demoRuntime(data.commandCenter.presence.state));
+        return () => {};
+      },
+    },
+  };
+}
+
+function demoRuntime(state: RuntimeStateDTO['state']): RuntimeStateDTO {
+  return {
+    state,
+    sessionActive: false,
+    sessionId: null,
+    operation: null,
+    task: null,
+    status: 'Demo data',
+    context: null,
+    at: null,
+    settledBy: 'none',
+    voiceGateway: 'unknown',
   };
 }

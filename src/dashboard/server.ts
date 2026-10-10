@@ -7,7 +7,12 @@ import { URL } from 'node:url';
 import { resolveTokenPath, getExpectedAccount } from '../auth.js';
 import { loadSnapshot, snapshotFingerprint, DATA_FILES } from './sources.js';
 import { buildReadModel, type ReadModel } from './readModel.js';
-import type { ChangeEventDTO, Envelope, SystemComponentDTO, SystemHealthDTO } from './types.js';
+import type { ChangeEventDTO, Envelope, RuntimeStateDTO, SystemComponentDTO, SystemHealthDTO } from './types.js';
+import { readRuntimeState, resolveRuntimeState, RUNTIME_FILES, type ResolvedRuntimeState } from '../runtime/pacificOpsRuntime.js';
+
+// The DTO is the wire shape of the resolved runtime; keep them structurally identical.
+const _runtimeShape: (r: ResolvedRuntimeState) => RuntimeStateDTO = (r) => r;
+void _runtimeShape;
 
 /**
  * Pacific Rising Ops — Command Center API.
@@ -175,6 +180,43 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
     };
   }
 
+  /* ----------------------- Pacific Ops runtime ----------------------- */
+
+  let voiceGateway: RuntimeStateDTO['voiceGateway'] = 'unknown';
+  let voiceCheckedAt = 0;
+  async function gatewayStatus(): Promise<RuntimeStateDTO['voiceGateway']> {
+    if (!voiceHealthUrl) return 'unknown';
+    if (now() - voiceCheckedAt > 5_000) {
+      voiceCheckedAt = now();
+      voiceGateway = (await probeVoice()) ? 'online' : 'offline';
+    }
+    return voiceGateway;
+  }
+
+  async function runtimeNow(): Promise<RuntimeStateDTO> {
+    return resolveRuntimeState(readRuntimeState(dataDir), { now: now(), voiceGateway: await gatewayStatus() });
+  }
+
+  const runtimeClients = new Set<http.ServerResponse>();
+  let lastRuntime = '';
+  let runtimePushing = false;
+  async function pushRuntime(): Promise<void> {
+    if (runtimeClients.size === 0 || runtimePushing) return;
+    runtimePushing = true;
+    try {
+      const payload = JSON.stringify(await runtimeNow());
+      if (payload === lastRuntime) return;
+      lastRuntime = payload;
+      for (const res of runtimeClients) res.write(`event: runtime\ndata: ${payload}\n\n`);
+    } finally {
+      runtimePushing = false;
+    }
+  }
+  // File watching delivers changes immediately; this tick covers hold/stale decay, voice
+  // gateway restarts and platforms where fs.watch is unreliable. Reads one small file.
+  const runtimeTick = setInterval(() => void pushRuntime(), 1_000);
+  runtimeTick.unref();
+
   /* ---------------------------- SSE ---------------------------- */
 
   const clients = new Set<http.ServerResponse>();
@@ -183,6 +225,7 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
   let pendingTopics = new Set<ChangeEventDTO['topics'][number]>();
   const heartbeat = setInterval(() => {
     for (const res of clients) res.write(': keep-alive\n\n');
+    for (const res of runtimeClients) res.write(': keep-alive\n\n');
   }, 25_000);
   heartbeat.unref();
 
@@ -205,6 +248,10 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
         if (!fileName) return;
         const name = fileName.toString();
         if (name.includes('.tmp.')) return;
+        if (name === RUNTIME_FILES.state) {
+          void pushRuntime();
+          return;
+        }
         for (const topic of topicsFor(name)) pendingTopics.add(topic);
         if (pendingTopics.size === 0) return;
         if (debounce) clearTimeout(debounce);
@@ -278,6 +325,25 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
       }
       case 'analytics':
         return send(res, 200, m.analytics);
+      case 'runtime': {
+        if (id === 'state') return send(res, 200, await runtimeNow());
+        if (id !== 'events') return notFound(res);
+        ensureWatcher();
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-store',
+          Connection: 'keep-alive',
+        });
+        res.write('retry: 3000\n\n');
+        // Every new subscriber gets the current state immediately; no waiting for the next event.
+        const current = JSON.stringify(await runtimeNow());
+        lastRuntime = current;
+        res.write(`event: runtime\ndata: ${current}\n\n`);
+        runtimeClients.add(res);
+        req.on('close', () => runtimeClients.delete(res));
+        return;
+      }
       case 'stream': {
         ensureWatcher();
         res.writeHead(200, {
@@ -355,6 +421,9 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
 
   function stop(): Promise<void> {
     clearInterval(heartbeat);
+    clearInterval(runtimeTick);
+    for (const res of runtimeClients) res.end();
+    runtimeClients.clear();
     if (debounce) clearTimeout(debounce);
     watcher?.close();
     for (const res of clients) res.end();
