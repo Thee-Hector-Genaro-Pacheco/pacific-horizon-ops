@@ -5,5 +5,5 @@ token.json
 token*.json
 credentials.json
 credentials.*.json
-data/
+/data/
 .DS_Store

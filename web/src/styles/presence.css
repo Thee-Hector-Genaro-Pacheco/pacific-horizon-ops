@@ -1,0 +1,277 @@
+/* ================================================================
+ * Pacific Ops presence
+ * ================================================================ */
+
+.presence {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.presence-stage {
+  position: absolute;
+  inset: 0;
+}
+
+.presence-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.presence-halo {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(38% 46% at 50% 44%, rgba(69, 216, 234, 0.07), transparent 70%),
+    radial-gradient(22% 24% at 50% 70%, rgba(69, 216, 234, 0.05), transparent 70%);
+  transition: opacity var(--dur-4) var(--ease-out);
+}
+
+.presence--awaiting-approval .presence-halo,
+.presence--thinking .presence-halo {
+  background:
+    radial-gradient(30% 34% at 50% 40%, rgba(239, 165, 69, 0.06), transparent 70%),
+    radial-gradient(40% 46% at 50% 44%, rgba(69, 216, 234, 0.06), transparent 70%);
+}
+
+.presence--error .presence-halo {
+  background: radial-gradient(36% 40% at 50% 44%, rgba(239, 90, 95, 0.04), transparent 70%);
+}
+
+.presence-placeholder {
+  position: absolute;
+  inset: 22% 32%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(69, 216, 234, 0.12), transparent 65%);
+  animation: breathe 3.2s var(--ease-in-out) infinite;
+}
+
+.presence-corner {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-color: var(--line-3);
+  border-style: solid;
+  border-width: 0;
+  opacity: 0.8;
+}
+.presence-corner.tl {
+  top: 12px;
+  left: 12px;
+  border-top-width: 1px;
+  border-left-width: 1px;
+}
+.presence-corner.tr {
+  top: 12px;
+  right: 12px;
+  border-top-width: 1px;
+  border-right-width: 1px;
+}
+.presence-corner.bl {
+  bottom: 12px;
+  left: 12px;
+  border-bottom-width: 1px;
+  border-left-width: 1px;
+}
+.presence-corner.br {
+  bottom: 12px;
+  right: 12px;
+  border-bottom-width: 1px;
+  border-right-width: 1px;
+}
+
+.presence-hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-family: var(--font-mono);
+}
+
+.presence-status {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: var(--r-xs);
+  background: rgba(6, 8, 11, 0.55);
+  border: 1px solid color-mix(in srgb, var(--tone) 28%, transparent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--tone);
+  white-space: nowrap;
+  transition:
+    color var(--dur-3),
+    border-color var(--dur-3);
+}
+
+.presence-status .dot {
+  width: 6px;
+  height: 6px;
+}
+
+.presence-tel {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-58%);
+  display: grid;
+  gap: 14px;
+}
+
+.presence-tel li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.presence-tel li span::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 8px;
+  vertical-align: 1px;
+  background: var(--tone, var(--idle));
+  border-radius: 1px;
+}
+
+.presence-tel--left {
+  left: 22px;
+}
+
+.presence-tel--right {
+  right: 22px;
+  justify-items: end;
+}
+
+.presence-leader {
+  display: block;
+  width: 34px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--line-3), transparent);
+}
+
+.presence-tel--right .presence-leader {
+  background: linear-gradient(270deg, var(--line-3), transparent);
+}
+
+.presence-tel li.tone-warn {
+  color: var(--amber);
+}
+
+.presence-headline {
+  position: absolute;
+  left: 50%;
+  bottom: 46px;
+  transform: translateX(-50%);
+  max-width: 80%;
+  font-family: var(--font-display);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--text-1);
+  text-align: center;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.presence:not(:has(.presence-services)) .presence-headline {
+  bottom: 22px;
+}
+
+.presence-services {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  background: rgba(6, 8, 11, 0.45);
+  padding: 4px 14px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-1);
+  backdrop-filter: blur(8px);
+}
+
+.presence-service-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  transition: color var(--dur-2);
+}
+
+.presence-service-item .dot {
+  width: 5px;
+  height: 5px;
+}
+
+.presence-service-item.tone-ok .dot {
+  background: var(--ok);
+  box-shadow: 0 0 8px rgba(62, 203, 133, 0.6);
+}
+
+.presence-service-item.tone-warn .dot {
+  background: var(--amber);
+  box-shadow: 0 0 8px rgba(239, 165, 69, 0.6);
+}
+
+.presence-service-item.tone-fail .dot {
+  background: var(--fail);
+  box-shadow: 0 0 8px rgba(239, 90, 95, 0.6);
+}
+
+.presence-service-item.tone-idle .dot {
+  background: var(--idle);
+}
+
+.presence-note {
+  position: absolute;
+  right: 18px;
+  bottom: 16px;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.presence--compact .presence-tel,
+.presence--compact .presence-services {
+  display: none;
+}
+
+.presence--compact .presence-headline {
+  bottom: 14px;
+  font-size: var(--fs-sm);
+}
+
+@media (max-width: 900px) {
+  .presence-tel {
+    display: none;
+  }
+}

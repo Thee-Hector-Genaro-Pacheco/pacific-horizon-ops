@@ -19,6 +19,9 @@
     "mailbox:approve": "tsx src/mailbox/cli.ts approve",
     "mailbox:execute": "tsx src/mailbox/cli.ts execute",
     "dashboard:serve": "tsx src/dashboard/server.ts",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
+    "web:check": "npm --prefix web run typecheck && npm --prefix web run lint && npm --prefix web test",
     "test": "tsx --test test/**/*.test.ts",
     "build": "tsc"
   },
