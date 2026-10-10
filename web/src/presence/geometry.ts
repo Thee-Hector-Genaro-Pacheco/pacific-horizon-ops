@@ -184,11 +184,11 @@ export function buildGeometry(total: number, seed = 7): PresenceGeometry {
     [pts[i], pts[j]] = [pts[j], pts[i]];
   }
 
-  // Soft glow sprites go first so they survive quality reduction.
+  // Soft holographic ambient glow nodes
   const glows: typeof pts = [
-    { p: FACE_CENTER, kind: KIND.glow, band: 0, size: 140 },
-    { p: CORE_POINT, kind: KIND.glow, band: 1, size: 95 },
-    { p: [0, 0.2, 0], kind: KIND.glow, band: 0.5, size: 420 },
+    { p: FACE_CENTER, kind: KIND.glow, band: 0, size: 70 },
+    { p: CORE_POINT, kind: KIND.glow, band: 1, size: 55 },
+    { p: [0, 0.2, 0], kind: KIND.glow, band: 0.5, size: 110 },
   ];
   const all = [...glows, ...pts];
 

@@ -1,5 +1,5 @@
 /* ================================================================
- * Pacific Ops presence
+ * Pacific Ops holographic presence
  * ================================================================ */
 
 .presence {
@@ -9,11 +9,17 @@
   min-height: 300px;
   isolation: isolate;
   overflow: hidden;
+  background:
+    radial-gradient(ellipse 90% 60% at 50% 50%, #030812 0%, #010307 100%),
+    #020408;
 }
 
 .presence-stage {
   position: absolute;
   inset: 0;
+  background: transparent;
+  perspective: 900px;
+  overflow: hidden;
 }
 
 .presence-canvas {
@@ -22,75 +28,238 @@
   width: 100%;
   height: 100%;
   display: block;
+  z-index: 5;
 }
 
+/* 3D Holographic Perspective Floor Grid */
+.presence-grid {
+  position: absolute;
+  bottom: -40px;
+  left: -20%;
+  width: 140%;
+  height: 48%;
+  transform: perspective(400px) rotateX(72deg);
+  transform-origin: bottom center;
+  background-image:
+    linear-gradient(90deg, rgba(0, 240, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(0, 240, 255, 0.08) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(ellipse 70% 65% at 50% 85%, black 25%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse 70% 65% at 50% 85%, black 25%, transparent 80%);
+  pointer-events: none;
+  opacity: 0.85;
+  z-index: 1;
+}
+
+/* Volumetric projector beam radiating upward */
+.presence-projector {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 70%;
+  height: 85%;
+  background:
+    conic-gradient(from 180deg at 50% 100%, transparent 75deg, rgba(0, 240, 255, 0.045) 85deg, rgba(0, 240, 255, 0.08) 90deg, rgba(0, 240, 255, 0.045) 95deg, transparent 105deg);
+  mask-image: linear-gradient(0deg, black 10%, transparent 95%);
+  -webkit-mask-image: linear-gradient(0deg, black 10%, transparent 95%);
+  pointer-events: none;
+  z-index: 2;
+  animation: holo-flicker 8s ease-in-out infinite alternate;
+}
+
+/* Hologram pedestal concentric emitter rings */
+.presence-emitter {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%) scaleY(0.35);
+  width: 320px;
+  height: 120px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 240, 255, 0.35);
+  box-shadow:
+    0 0 25px rgba(0, 240, 255, 0.25),
+    inset 0 0 20px rgba(0, 240, 255, 0.2);
+  pointer-events: none;
+  z-index: 2;
+  animation: holo-pulse 4s ease-in-out infinite;
+}
+
+.presence-emitter::before {
+  content: '';
+  position: absolute;
+  inset: 22px;
+  border-radius: 50%;
+  border: 1px dashed rgba(0, 240, 255, 0.4);
+  box-shadow: 0 0 15px rgba(0, 240, 255, 0.2);
+}
+
+.presence-emitter::after {
+  content: '';
+  position: absolute;
+  inset: 44px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(0, 240, 255, 0.35), transparent 70%);
+  box-shadow: 0 0 30px rgba(0, 240, 255, 0.4);
+}
+
+/* Sweeping laser scanline */
+.presence-scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 10%, rgba(0, 240, 255, 0.5) 50%, transparent 90%);
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.6), 0 0 3px #ffffff;
+  pointer-events: none;
+  z-index: 6;
+  opacity: 0.6;
+  animation: holo-scan 6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Background atmospheric halo */
 .presence-halo {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(38% 46% at 50% 44%, rgba(69, 216, 234, 0.07), transparent 70%),
-    radial-gradient(22% 24% at 50% 70%, rgba(69, 216, 234, 0.05), transparent 70%);
+    radial-gradient(42% 48% at 50% 45%, rgba(0, 240, 255, 0.09), transparent 70%),
+    radial-gradient(28% 28% at 50% 68%, rgba(0, 240, 255, 0.07), transparent 70%);
   transition: opacity var(--dur-4) var(--ease-out);
+  pointer-events: none;
+  z-index: 3;
 }
 
+/* State-specific halo and energy variations */
 .presence--awaiting-approval .presence-halo,
 .presence--thinking .presence-halo {
   background:
-    radial-gradient(30% 34% at 50% 40%, rgba(239, 165, 69, 0.06), transparent 70%),
-    radial-gradient(40% 46% at 50% 44%, rgba(69, 216, 234, 0.06), transparent 70%);
+    radial-gradient(35% 38% at 50% 42%, rgba(255, 158, 27, 0.12), transparent 70%),
+    radial-gradient(45% 50% at 50% 46%, rgba(0, 240, 255, 0.08), transparent 70%);
+}
+
+.presence--awaiting-approval .presence-emitter,
+.presence--thinking .presence-emitter {
+  border-color: rgba(255, 158, 27, 0.45);
+  box-shadow:
+    0 0 25px rgba(255, 158, 27, 0.3),
+    inset 0 0 20px rgba(255, 158, 27, 0.2);
+}
+
+.presence--awaiting-approval .presence-scanline,
+.presence--thinking .presence-scanline {
+  background: linear-gradient(90deg, transparent 10%, rgba(255, 158, 27, 0.7) 50%, transparent 90%);
+  box-shadow: 0 0 12px rgba(255, 158, 27, 0.7), 0 0 3px #ffffff;
 }
 
 .presence--error .presence-halo {
-  background: radial-gradient(36% 40% at 50% 44%, rgba(239, 90, 95, 0.04), transparent 70%);
+  background: radial-gradient(40% 44% at 50% 44%, rgba(255, 62, 85, 0.12), transparent 70%);
 }
 
+.presence--error .presence-emitter {
+  border-color: rgba(255, 62, 85, 0.5);
+  box-shadow: 0 0 25px rgba(255, 62, 85, 0.4);
+}
+
+.presence--error .presence-scanline {
+  background: linear-gradient(90deg, transparent 10%, rgba(255, 62, 85, 0.7) 50%, transparent 90%);
+  box-shadow: 0 0 12px rgba(255, 62, 85, 0.7);
+}
+
+.presence--success .presence-halo {
+  background: radial-gradient(40% 45% at 50% 45%, rgba(0, 255, 178, 0.12), transparent 70%);
+}
+
+.presence--executing .presence-scanline {
+  animation-duration: 2.5s;
+}
+
+/* Suspense placeholder (never blank or white!) */
 .presence-placeholder {
   position: absolute;
   inset: 22% 32%;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(69, 216, 234, 0.12), transparent 65%);
-  animation: breathe 3.2s var(--ease-in-out) infinite;
+  background: radial-gradient(circle, rgba(0, 240, 255, 0.15), transparent 70%);
+  animation: holo-pulse 2s ease-in-out infinite;
+  z-index: 4;
 }
 
+/* Corner Reticle Brackets */
 .presence-corner {
   position: absolute;
-  width: 14px;
-  height: 14px;
-  border-color: var(--line-3);
+  width: 16px;
+  height: 16px;
+  border-color: rgba(0, 240, 255, 0.5);
   border-style: solid;
   border-width: 0;
-  opacity: 0.8;
-}
-.presence-corner.tl {
-  top: 12px;
-  left: 12px;
-  border-top-width: 1px;
-  border-left-width: 1px;
-}
-.presence-corner.tr {
-  top: 12px;
-  right: 12px;
-  border-top-width: 1px;
-  border-right-width: 1px;
-}
-.presence-corner.bl {
-  bottom: 12px;
-  left: 12px;
-  border-bottom-width: 1px;
-  border-left-width: 1px;
-}
-.presence-corner.br {
-  bottom: 12px;
-  right: 12px;
-  border-bottom-width: 1px;
-  border-right-width: 1px;
+  z-index: 7;
+  pointer-events: none;
+  filter: drop-shadow(0 0 4px rgba(0, 240, 255, 0.4));
 }
 
+.presence-corner.tl {
+  top: 14px;
+  left: 14px;
+  border-top-width: 1.5px;
+  border-left-width: 1.5px;
+}
+
+.presence-corner.tr {
+  top: 14px;
+  right: 14px;
+  border-top-width: 1.5px;
+  border-right-width: 1.5px;
+}
+
+.presence-corner.bl {
+  bottom: 14px;
+  left: 14px;
+  border-bottom-width: 1.5px;
+  border-left-width: 1.5px;
+}
+
+.presence-corner.br {
+  bottom: 14px;
+  right: 14px;
+  border-bottom-width: 1.5px;
+  border-right-width: 1.5px;
+}
+
+/* Lateral HUD tactical brackets */
+.presence-bracket {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 48px;
+  border-style: solid;
+  border-color: rgba(0, 240, 255, 0.35);
+  border-width: 0;
+  pointer-events: none;
+  z-index: 7;
+}
+
+.presence-bracket--left {
+  left: 14px;
+  border-left-width: 1.5px;
+  border-top-width: 1.5px;
+  border-bottom-width: 1.5px;
+}
+
+.presence-bracket--right {
+  right: 14px;
+  border-right-width: 1.5px;
+  border-top-width: 1.5px;
+  border-bottom-width: 1.5px;
+}
+
+/* HUD Overlay */
 .presence-hud {
   position: absolute;
   inset: 0;
   pointer-events: none;
   font-family: var(--font-mono);
+  z-index: 10;
 }
 
 .presence-status {
@@ -101,18 +270,22 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
-  border-radius: var(--r-xs);
-  background: rgba(6, 8, 11, 0.55);
-  border: 1px solid color-mix(in srgb, var(--tone) 28%, transparent);
-  font-size: 10px;
-  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: var(--r-sm);
+  background: rgba(3, 8, 16, 0.75);
+  border: 1px solid color-mix(in srgb, var(--tone) 40%, rgba(0, 240, 255, 0.2));
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.6),
+    0 0 14px color-mix(in srgb, var(--tone) 25%, transparent),
+    inset 0 0 10px color-mix(in srgb, var(--tone) 15%, transparent);
+  font-size: 10.5px;
+  font-weight: 700;
   letter-spacing: 0.18em;
   color: var(--tone);
   white-space: nowrap;
-  transition:
-    color var(--dur-3),
-    border-color var(--dur-3);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: color var(--dur-3), border-color var(--dur-3), box-shadow var(--dur-3);
 }
 
 .presence-status .dot {
@@ -123,21 +296,22 @@
 .presence-tel {
   position: absolute;
   top: 50%;
-  transform: translateY(-58%);
+  transform: translateY(-56%);
   display: grid;
-  gap: 14px;
+  gap: 16px;
 }
 
 .presence-tel li {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 9.5px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
+  gap: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-2);
   white-space: nowrap;
+  text-shadow: 0 0 8px rgba(0, 0, 0, 0.9);
 }
 
 .presence-tel li span::before {
@@ -149,45 +323,54 @@
   vertical-align: 1px;
   background: var(--tone, var(--idle));
   border-radius: 1px;
+  box-shadow: 0 0 6px var(--tone, var(--idle));
 }
 
 .presence-tel--left {
-  left: 22px;
+  left: 28px;
 }
 
 .presence-tel--right {
-  right: 22px;
+  right: 28px;
   justify-items: end;
 }
 
 .presence-leader {
   display: block;
-  width: 34px;
+  width: 38px;
   height: 1px;
-  background: linear-gradient(90deg, var(--line-3), transparent);
+  background: linear-gradient(90deg, rgba(0, 240, 255, 0.4), transparent);
 }
 
 .presence-tel--right .presence-leader {
-  background: linear-gradient(270deg, var(--line-3), transparent);
+  background: linear-gradient(270deg, rgba(0, 240, 255, 0.4), transparent);
 }
 
 .presence-tel li.tone-warn {
   color: var(--amber);
+  text-shadow: 0 0 10px rgba(255, 158, 27, 0.4);
+}
+
+.presence-tel li.tone-ok {
+  color: var(--cyan);
+  text-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
 }
 
 .presence-headline {
   position: absolute;
   left: 50%;
-  bottom: 46px;
+  bottom: 52px;
   transform: translateX(-50%);
-  max-width: 80%;
+  max-width: 82%;
   font-family: var(--font-display);
-  font-size: var(--fs-md);
-  font-weight: 500;
-  letter-spacing: 0.01em;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   color: var(--text-1);
   text-align: center;
-  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.9);
+  text-shadow:
+    0 2px 14px rgba(0, 0, 0, 0.95),
+    0 0 18px rgba(0, 240, 255, 0.25);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -195,33 +378,37 @@
 }
 
 .presence:not(:has(.presence-services)) .presence-headline {
-  bottom: 22px;
+  bottom: 24px;
 }
 
 .presence-services {
   position: absolute;
   left: 50%;
-  bottom: 16px;
+  bottom: 18px;
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 22px;
+  gap: 24px;
   font-family: var(--font-mono);
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
+  font-weight: 700;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  background: rgba(6, 8, 11, 0.45);
-  padding: 4px 14px;
+  background: rgba(3, 8, 16, 0.65);
+  padding: 5px 18px;
   border-radius: var(--r-pill);
-  border: 1px solid var(--line-1);
-  backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 240, 255, 0.25);
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.5),
+    0 0 12px rgba(0, 240, 255, 0.15);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .presence-service-item {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   color: var(--text-2);
   transition: color var(--dur-2);
 }
@@ -231,19 +418,28 @@
   height: 5px;
 }
 
+.presence-service-item.tone-ok {
+  color: var(--cyan);
+}
 .presence-service-item.tone-ok .dot {
-  background: var(--ok);
-  box-shadow: 0 0 8px rgba(62, 203, 133, 0.6);
+  background: var(--cyan);
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.8);
 }
 
+.presence-service-item.tone-warn {
+  color: var(--amber);
+}
 .presence-service-item.tone-warn .dot {
   background: var(--amber);
-  box-shadow: 0 0 8px rgba(239, 165, 69, 0.6);
+  box-shadow: 0 0 8px rgba(255, 158, 27, 0.8);
 }
 
+.presence-service-item.tone-fail {
+  color: var(--fail);
+}
 .presence-service-item.tone-fail .dot {
   background: var(--fail);
-  box-shadow: 0 0 8px rgba(239, 90, 95, 0.6);
+  box-shadow: 0 0 8px rgba(255, 62, 85, 0.8);
 }
 
 .presence-service-item.tone-idle .dot {
@@ -255,7 +451,7 @@
   right: 18px;
   bottom: 16px;
   font-size: 9px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-4);
 }
@@ -268,6 +464,42 @@
 .presence--compact .presence-headline {
   bottom: 14px;
   font-size: var(--fs-sm);
+}
+
+@keyframes holo-scan {
+  0% {
+    top: 5%;
+    opacity: 0.1;
+  }
+  15% {
+    opacity: 0.65;
+  }
+  85% {
+    opacity: 0.65;
+  }
+  100% {
+    top: 92%;
+    opacity: 0.1;
+  }
+}
+
+@keyframes holo-pulse {
+  0%, 100% {
+    transform: translateX(-50%) scaleY(0.35) scale(1);
+    opacity: 0.75;
+  }
+  50% {
+    transform: translateX(-50%) scaleY(0.35) scale(1.04);
+    opacity: 1;
+  }
+}
+
+@keyframes holo-flicker {
+  0%, 100% { opacity: 0.85; }
+  30% { opacity: 0.95; }
+  35% { opacity: 0.75; }
+  70% { opacity: 0.9; }
+  85% { opacity: 0.8; }
 }
 
 @media (max-width: 900px) {

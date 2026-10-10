@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { detectTier, PresenceEngine } from './engine';
 import { drawStaticPresence } from './fallback';
 import type { PacificOpsState } from './states';
@@ -6,7 +6,7 @@ import type { PacificOpsState } from './states';
 /**
  * Hosts the WebGL engine. Lazy-loaded so the graphics code never blocks first paint.
  * Pauses when off-screen or when the tab is hidden; falls back to a static frame
- * if WebGL is missing or the context is lost.
+ * on a dedicated 2D canvas if WebGL is missing or the context is lost.
  */
 export default function PresenceCanvas({
   state,
@@ -21,31 +21,32 @@ export default function PresenceCanvas({
   framing: 'hero' | 'compact';
   onFallback?: () => void;
 }) {
+  const [fellBack, setFellBack] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fallbackCanvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<PresenceEngine | null>(null);
   const stateRef = useRef(state);
-  const fallbackRef = useRef(false);
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
   useEffect(() => {
+    if (fellBack) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const tier = detectTier();
     const saveData = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData === true;
 
-    const fallBack = () => {
-      fallbackRef.current = true;
+    const triggerFallback = () => {
       engineRef.current?.dispose();
       engineRef.current = null;
-      drawStaticPresence(canvas, stateRef.current, framing);
+      setFellBack(true);
       onFallback?.();
     };
 
     if (saveData) {
-      fallBack();
+      triggerFallback();
       return;
     }
 
@@ -56,10 +57,10 @@ export default function PresenceCanvas({
         maxDpr: tier.maxDpr,
         reducedMotion,
         framing,
-        onContextLost: fallBack,
+        onContextLost: triggerFallback,
       });
     } catch {
-      fallBack();
+      triggerFallback();
       return;
     }
     engineRef.current = engine;
@@ -91,16 +92,33 @@ export default function PresenceCanvas({
       engine.dispose();
       engineRef.current = null;
     };
-  }, [reducedMotion, framing, onFallback]);
+  }, [fellBack, reducedMotion, framing, onFallback]);
 
   useEffect(() => {
-    if (engineRef.current) engineRef.current.setState(state);
-    else if (fallbackRef.current && canvasRef.current) drawStaticPresence(canvasRef.current, state, framing);
-  }, [state, framing]);
+    if (engineRef.current) {
+      engineRef.current.setState(state);
+    } else if (fellBack && fallbackCanvasRef.current) {
+      drawStaticPresence(fallbackCanvasRef.current, state, framing);
+    }
+  }, [state, framing, fellBack]);
 
   useEffect(() => {
     engineRef.current?.setAudioLevel(audioLevel);
   }, [audioLevel]);
 
-  return <canvas ref={canvasRef} className="presence-canvas" aria-hidden />;
+  if (fellBack) {
+    return (
+      <canvas
+        ref={(el) => {
+          fallbackCanvasRef.current = el;
+          if (el) drawStaticPresence(el, state, framing);
+        }}
+        key="fallback-canvas"
+        className="presence-canvas"
+        aria-hidden
+      />
+    );
+  }
+
+  return <canvas ref={canvasRef} key="webgl-canvas" className="presence-canvas" aria-hidden />;
 }

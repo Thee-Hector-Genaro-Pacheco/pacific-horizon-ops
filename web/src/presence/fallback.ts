@@ -14,7 +14,8 @@ export function drawStaticPresence(canvas: HTMLCanvasElement, state: PacificOpsS
   canvas.width = Math.round(w * dpr);
   canvas.height = Math.round(h * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#04070c';
+  ctx.fillRect(0, 0, w, h);
   ctx.globalCompositeOperation = 'lighter';
 
   const p = paramsFor(state);

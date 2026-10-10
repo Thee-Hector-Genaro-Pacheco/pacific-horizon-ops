@@ -103,6 +103,10 @@ export function PacificOpsPresence({
   return (
     <div className={cn('presence', `presence--${framing}`, `presence--${state.replace('_', '-')}`, className)} data-state={state}>
       <div className="presence-stage" aria-hidden>
+        <div className="presence-grid" />
+        <div className="presence-projector" />
+        <div className="presence-emitter" />
+        <div className="presence-scanline" />
         <div className="presence-halo" />
         <Suspense fallback={<div className="presence-placeholder" />}>
           {webgl ? (
@@ -115,6 +119,8 @@ export function PacificOpsPresence({
         <span className="presence-corner tr" />
         <span className="presence-corner bl" />
         <span className="presence-corner br" />
+        <span className="presence-bracket presence-bracket--left" />
+        <span className="presence-bracket presence-bracket--right" />
       </div>
 
       <div className="presence-hud">

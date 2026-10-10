@@ -17,7 +17,11 @@ html {
 
 body {
   margin: 0;
-  background: var(--bg-0);
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(0, 240, 255, 0.04) 0%, transparent 60%),
+    radial-gradient(80% 60% at 85% 15%, rgba(0, 180, 255, 0.03) 0%, transparent 60%),
+    linear-gradient(180deg, #05080e 0%, #020408 100%);
+  background-attachment: fixed;
   color: var(--text-1);
   font-family: var(--font-sans);
   font-size: var(--fs-base);
@@ -26,6 +30,30 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: rgba(0, 240, 255, 0.28);
+  color: #fff;
+  text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
+}
+
+/* Sci-Fi Holographic Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(2, 4, 8, 0.8);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 240, 255, 0.18);
+  border-radius: var(--r-pill);
+  box-shadow: 0 0 6px rgba(0, 240, 255, 0.3);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.4);
 }
 
 h1,

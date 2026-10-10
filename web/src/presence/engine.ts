@@ -194,14 +194,14 @@ void main() {
   if (d > 0.5) discard;
   float a;
   if (vGlow > 0.5) {
-    a = exp(-d * d * 14.0);
+    a = exp(-d * d * 18.0) * 0.35;
   } else {
     a = 1.0 - smoothstep(0.0, 0.5, d);
     a = a * a;
   }
-  vec3 rgb = vColor * vAlpha * a;
-  // Premultiplied output: alpha follows brightness so additive light never darkens the page.
-  gl_FragColor = vec4(rgb, max(rgb.r, max(rgb.g, rgb.b)));
+  // Soft volumetric photon emission: prevents additive clipping into blinding white
+  vec3 rgb = vColor * min(vAlpha, 1.2) * a;
+  gl_FragColor = vec4(rgb, 1.0);
 }
 `;
 
@@ -247,7 +247,9 @@ export class PresenceEngine {
     private canvas: HTMLCanvasElement,
     private options: EngineOptions
   ) {
-    const gl = canvas.getContext('webgl', { antialias: false, alpha: true, premultipliedAlpha: true, powerPreference: 'high-performance' });
+    const gl =
+      canvas.getContext('webgl', { antialias: true, alpha: false, depth: false, powerPreference: 'high-performance' }) ??
+      (canvas.getContext('experimental-webgl', { antialias: true, alpha: false }) as WebGLRenderingContext | null);
     if (!gl) throw new Error('WebGL unavailable');
     this.gl = gl;
     this.program = this.createProgram(VERT, FRAG);
@@ -315,7 +317,7 @@ export class PresenceEngine {
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
-    gl.clearColor(0, 0, 0, 0);
+    gl.clearColor(0.016, 0.024, 0.035, 1.0);
   }
 
   setState(state: PacificOpsState) {
