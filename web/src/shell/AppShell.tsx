@@ -115,7 +115,7 @@ export function AppShell() {
         <div className="brand">
           <BrandMark />
           <div className="brand-text">
-            <div className="brand-name">PACIFIC RISING OPS</div>
+            <div className="brand-name">Pacific Rising Ops</div>
             <div className="brand-org">Pacific Horizon Labs</div>
           </div>
         </div>
@@ -160,7 +160,7 @@ export function AppShell() {
           <button type="button" className="ops-card" onClick={() => setStatusOpen(true)} aria-label={`Pacific Ops ${availability.label}. Open status`}>
             <span className="ops-card-head">
               <Dot tone={availability.tone} live={availability.live} />
-              <span className="ops-card-name">PACIFIC OPS</span>
+              <span className="ops-card-name">Pacific Ops</span>
               <span className={cn('ops-card-state', availability.tone)}>{availability.label.toUpperCase()}</span>
             </span>
             <span className="ops-card-grid">
@@ -179,7 +179,7 @@ export function AppShell() {
         <header className="topbar">
           <div className="topbar-brand">
             <BrandMark />
-            <span className="brand-name">PACIFIC RISING OPS</span>
+            <span className="brand-name">Pacific Rising Ops</span>
           </div>
           <div className="crumbs">
             <span>Pacific Rising Ops</span>
@@ -231,7 +231,10 @@ export function AppShell() {
         )}
 
         <main id="content" className="content" key={mode} tabIndex={-1}>
-          <Outlet />
+          {/* Keyed by route so each page arrives with a short, shared transition (see .route-stage). */}
+          <div className="route-stage" key={location.pathname}>
+            <Outlet />
+          </div>
         </main>
       </div>
 

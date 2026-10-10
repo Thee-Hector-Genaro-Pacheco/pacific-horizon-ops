@@ -1,0 +1,755 @@
+/* ================================================================
+ * Pacific Rising Ops — premium refinement layer
+ *
+ * Loaded last. Refines the existing system instead of replacing it:
+ * typography roles, material, an interaction vocabulary, environmental
+ * lighting driven by the live Pacific Ops state, depth and transitions.
+ * Delete this file (and its import) to return to the previous look.
+ * ================================================================ */
+
+:root {
+  /* Motion: slow in, soft out. No bounce anywhere. */
+  --ease-premium: cubic-bezier(0.22, 0.61, 0.24, 1);
+  --ease-settle: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-quick: 140ms;
+  --dur-base: 220ms;
+  --dur-slow: 480ms;
+
+  /* Material */
+  --glass-top: rgba(14, 22, 34, 0.72);
+  --glass-bottom: rgba(6, 10, 17, 0.86);
+  --edge-light: rgba(170, 225, 240, 0.09);
+  --edge-shade: rgba(0, 0, 0, 0.55);
+  --inner-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  --depth-1: 0 1px 0 rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.7);
+  --depth-2: 0 1px 0 rgba(0, 0, 0, 0.45), 0 18px 40px -18px rgba(0, 0, 0, 0.85);
+
+  /* Environmental light cast by Pacific Ops (set per state on the hero). */
+  --env-rgb: 70, 215, 235;
+  --env-strength: 0.05;
+}
+
+/* ---------------- Atmosphere ---------------- */
+
+body {
+  background:
+    radial-gradient(70% 55% at 58% 22%, rgba(40, 150, 175, 0.07), transparent 70%),
+    radial-gradient(120% 80% at 50% 120%, rgba(4, 24, 36, 0.55), transparent 60%),
+    linear-gradient(180deg, #05080d 0%, #020407 100%);
+  background-attachment: fixed;
+}
+
+/* A distant, barely-there grid behind the whole console. On body (not a column) so it
+ * sits beneath every surface, sidebar included, instead of painting over any of them. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  /* Unmasked and very faint: cheaper than a masked layer; the radial term fades the edges. */
+  background-image:
+    radial-gradient(90% 75% at 55% 30%, transparent 40%, rgba(2, 4, 7, 0.9) 85%),
+    linear-gradient(rgba(120, 200, 220, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(120, 200, 220, 0.02) 1px, transparent 1px);
+  background-size: 100% 100%, 56px 56px, 56px 56px;
+}
+
+/* ---------------- Typography roles ----------------
+ * Product  → display sans, sentence case
+ * Entity   → sans semibold ("Pacific Ops")
+ * State    → mono caps, small (SPEAKING, AWAITING APPROVAL)
+ * Label    → sans, small, quiet
+ * Data     → display sans, tabular figures
+ * Telemetry→ mono, used sparingly
+ */
+
+.crumbs {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-3);
+}
+.crumbs strong {
+  color: var(--text-1);
+  font-weight: 550;
+  text-shadow: none;
+}
+
+.page-eyebrow {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 550;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--text-3);
+}
+.page-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.page-desc {
+  color: var(--text-3);
+}
+
+.panel-title {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-1);
+}
+.panel-title::before {
+  content: none;
+}
+.panel-title svg {
+  color: var(--text-3);
+}
+.panel-title .count {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+  background: rgba(150, 175, 205, 0.08);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.nav-group-label {
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-4);
+  padding-top: 2px;
+}
+.nav-group-label::before {
+  content: none;
+}
+
+/* Numbers align and read as data. */
+.cc-ribbon-value,
+.panel-title .count,
+.activity-time,
+.kpi-value {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- Material ---------------- */
+
+.panel {
+  background:
+    linear-gradient(180deg, var(--glass-top), var(--glass-bottom)),
+    radial-gradient(120% 60% at 50% -10%, rgba(var(--env-rgb), calc(var(--env-strength) * 0.6)), transparent 70%);
+  border: 1px solid rgba(150, 190, 215, 0.09);
+  box-shadow: var(--inner-highlight), var(--depth-1);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition:
+    border-color var(--dur-base) var(--ease-premium),
+    box-shadow var(--dur-base) var(--ease-premium),
+    opacity var(--dur-slow) var(--ease-premium),
+    filter var(--dur-slow) var(--ease-premium);
+}
+/* Edge light: the top hairline is brighter, like light from above. A plain border colour,
+ * not a masked overlay, so it costs nothing to paint. */
+.panel {
+  border-top-color: rgba(185, 230, 245, 0.14);
+}
+.panel-header {
+  background: transparent;
+  border-bottom-color: rgba(150, 190, 215, 0.07);
+}
+
+/* ---------------- Interaction vocabulary ----------------
+ * hover → 1px lift + edge light   active → slight compression
+ * focus → precise ring            state change → short illumination
+ */
+
+.btn,
+.icon-btn,
+.nav-item,
+.row,
+.activity--link,
+.cc-ribbon-col,
+.ops-card,
+.ops-pill {
+  transition:
+    transform var(--dur-quick) var(--ease-premium),
+    background-color var(--dur-base) var(--ease-premium),
+    border-color var(--dur-base) var(--ease-premium),
+    box-shadow var(--dur-base) var(--ease-premium),
+    color var(--dur-base) var(--ease-premium);
+}
+
+.btn:hover:not(:disabled),
+.ops-pill:hover {
+  transform: translateY(-1px);
+}
+.btn:active:not(:disabled),
+.icon-btn:active,
+.ops-pill:active,
+.cc-ribbon-col:active,
+.row:active {
+  transform: translateY(0) scale(0.985);
+  transition-duration: 60ms;
+}
+
+.btn--primary {
+  box-shadow: var(--inner-highlight), 0 6px 18px -10px rgba(0, 240, 255, 0.55);
+}
+
+.row:hover,
+.activity--link:hover {
+  background: linear-gradient(90deg, rgba(var(--env-rgb), 0.045), rgba(var(--env-rgb), 0.01) 60%, transparent);
+}
+
+:focus-visible {
+  outline: 1.5px solid rgba(120, 230, 245, 0.85);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(0, 240, 255, 0.12);
+}
+
+/* New activity entries arrive instead of popping in. */
+.activity.is-new {
+  animation: premium-arrive var(--dur-slow) var(--ease-settle) both;
+}
+
+/* ---------------- Route transitions ---------------- */
+
+.route-stage {
+  animation: route-in var(--dur-base) var(--ease-settle) both;
+}
+
+@keyframes route-in {
+  /* Opacity + transform only: compositor-friendly, no full-page blur cost. */
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes premium-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------------- Sidebar ---------------- */
+
+.sidebar {
+  background: linear-gradient(180deg, rgba(6, 10, 16, 0.92), rgba(3, 6, 10, 0.96));
+  border-right-color: rgba(150, 190, 215, 0.07);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.015), 12px 0 40px -30px rgba(0, 0, 0, 0.9);
+}
+.brand-name {
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+.brand-org {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--text-4);
+}
+
+.nav-item {
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-3);
+}
+.nav-item svg {
+  color: var(--text-4);
+}
+.nav-item:hover {
+  background: rgba(150, 190, 215, 0.045);
+  border-color: transparent;
+  color: var(--text-1);
+}
+.nav-item:hover svg {
+  color: var(--text-2);
+  filter: none;
+}
+.nav-item.active {
+  background: linear-gradient(90deg, rgba(150, 215, 235, 0.085), rgba(150, 215, 235, 0.015) 70%);
+  color: var(--text-1);
+  box-shadow: var(--inner-highlight);
+}
+.nav-item.active svg {
+  color: var(--cyan-ice);
+  filter: none;
+}
+.nav-item.active::before {
+  width: 2px;
+  background: linear-gradient(180deg, transparent, var(--cyan) 30%, var(--cyan) 70%, transparent);
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
+}
+
+/* System health as infrastructure telemetry, not badges. */
+.ops-card {
+  background: linear-gradient(180deg, rgba(12, 18, 27, 0.8), rgba(6, 9, 14, 0.9));
+  border-color: rgba(150, 190, 215, 0.08);
+  box-shadow: var(--inner-highlight);
+}
+.ops-card-name {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+.ops-card-grid > span {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+}
+
+/* ---------------- Command Center hero ---------------- */
+
+.cc-command-hero {
+  --px: 0;
+  --py: 0;
+  border-color: rgba(var(--env-rgb), 0.22);
+  background:
+    radial-gradient(60% 70% at 50% 35%, rgba(var(--env-rgb), calc(var(--env-strength) * 1.2)), transparent 70%),
+    linear-gradient(180deg, #050a11, #020407);
+  box-shadow:
+    var(--inner-highlight),
+    0 30px 80px -40px rgba(0, 0, 0, 0.95),
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 0 60px -30px rgba(var(--env-rgb), 0.35);
+  transition:
+    border-color var(--dur-slow) var(--ease-premium),
+    box-shadow var(--dur-slow) var(--ease-premium);
+}
+
+/* Environmental lighting per live state: very small shifts in the light Pacific Ops casts. */
+.cc-command-hero[data-presence='listening'] { --env-rgb: 90, 225, 245; --env-strength: 0.07; }
+.cc-command-hero[data-presence='thinking'] { --env-rgb: 239, 165, 69; --env-strength: 0.055; }
+.cc-command-hero[data-presence='speaking'] { --env-rgb: 110, 230, 245; --env-strength: 0.075; }
+.cc-command-hero[data-presence='awaiting_approval'] { --env-rgb: 239, 165, 69; --env-strength: 0.07; }
+.cc-command-hero[data-presence='executing'] { --env-rgb: 170, 240, 250; --env-strength: 0.085; }
+.cc-command-hero[data-presence='success'] { --env-rgb: 62, 203, 133; --env-strength: 0.06; }
+.cc-command-hero[data-presence='error'] { --env-rgb: 239, 90, 95; --env-strength: 0.035; }
+
+.cc-command-header {
+  background: linear-gradient(180deg, rgba(10, 16, 24, 0.7), rgba(6, 10, 16, 0.35));
+  border-bottom-color: rgba(150, 190, 215, 0.07);
+  gap: 16px;
+}
+.cc-command-title {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.005em;
+  text-transform: none;
+  color: var(--text-1);
+  text-shadow: none;
+}
+.cc-command-sub {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--text-3);
+}
+.cc-command-status-id {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--text-1);
+}
+.cc-command-status-label {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-shadow: none;
+}
+
+/* Live call mode: the stage gains presence; ambient mode stays calm. */
+.cc-live-chip {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--env-rgb), 0.35);
+  background: rgba(var(--env-rgb), 0.08);
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--text-1);
+  animation: premium-arrive var(--dur-slow) var(--ease-settle) both;
+}
+.cc-live-chip i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgb(var(--env-rgb));
+  box-shadow: 0 0 0 0 rgba(var(--env-rgb), 0.6);
+  animation: live-ping 2.4s var(--ease-premium) infinite;
+}
+.cc-command-hero.is-live {
+  border-color: rgba(var(--env-rgb), 0.38);
+  box-shadow:
+    var(--inner-highlight),
+    0 30px 80px -40px rgba(0, 0, 0, 0.95),
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 0 90px -30px rgba(var(--env-rgb), 0.5);
+}
+.cc-command-hero.is-live .cc-command-stage,
+.cc-command-hero.is-live .cc-command-stage .presence {
+  min-height: clamp(460px, 62vh, 700px);
+}
+.cc-command-stage {
+  transition: min-height var(--dur-slow) var(--ease-settle);
+}
+.cc-command-hero.is-degraded {
+  border-color: rgba(239, 165, 69, 0.22);
+}
+
+@keyframes live-ping {
+  0% { box-shadow: 0 0 0 0 rgba(var(--env-rgb), 0.55); }
+  70%, 100% { box-shadow: 0 0 0 7px rgba(var(--env-rgb), 0); }
+}
+
+/* Depth: background layers drift a few pixels against the pointer, foreground with it. */
+.cc-command-hero .presence-atmos,
+.cc-command-hero .presence-grid {
+  translate: calc(var(--px) * -3px) calc(var(--py) * -2px);
+  transition: translate 900ms var(--ease-settle);
+}
+.cc-command-hero .presence-plane {
+  translate: calc(var(--px) * -2px) 0;
+  transition: translate 900ms var(--ease-settle);
+}
+.cc-command-hero .presence-tel {
+  translate: calc(var(--px) * 1.5px) calc(var(--py) * 1px);
+  transition: translate 700ms var(--ease-settle), transform var(--dur-slow) var(--ease-settle), opacity var(--dur-slow) var(--ease-premium);
+}
+.cc-command-hero .presence-callout,
+.cc-command-hero .presence-headline,
+.cc-command-hero .presence-services {
+  translate: calc(var(--px) * 3px) calc(var(--py) * 2px);
+  transition: translate 600ms var(--ease-settle);
+}
+
+/* Light cast onto nearby telemetry. */
+.cc-command-hero .presence-tel li {
+  transition: color var(--dur-slow) var(--ease-premium), opacity var(--dur-slow) var(--ease-premium);
+}
+.cc-command-hero .presence-leader {
+  box-shadow: 0 0 6px rgba(var(--env-rgb), calc(var(--env-strength) * 2));
+}
+
+/* LISTENING: the HUD leans in toward Pacific Ops. */
+.cc-command-hero[data-presence='listening'] .presence-tel--left { transform: translate(6px, -58%); }
+.cc-command-hero[data-presence='listening'] .presence-tel--right { transform: translate(-6px, -58%); }
+
+/* THINKING: surrounding telemetry slows and quiets; cognition owns the moment. */
+.cc-command-hero[data-presence='thinking'] .presence-leader::before { animation-duration: 14s; }
+.cc-command-hero[data-presence='thinking'] .presence-tel li { opacity: 0.78; }
+
+/* AWAITING APPROVAL: environment restrains itself; the approval layer comes forward. */
+.cc-command-hero[data-presence='awaiting_approval'] .presence-tel li:not(.tone-warn) { opacity: 0.6; }
+.cc-command-hero[data-presence='awaiting_approval'] .presence-plane,
+.cc-command-hero[data-presence='awaiting_approval'] .presence-grid { opacity: 0.35; }
+.cc-command-hero[data-presence='awaiting_approval'] .presence-callout::after {
+  /* Approval layer: a soft amber plate behind the text, starting where the leader ends. */
+  content: '';
+  position: absolute;
+  z-index: -1;
+  left: 40px;
+  right: -14px;
+  top: -9px;
+  bottom: -9px;
+  border-radius: 10px;
+  background: linear-gradient(90deg, rgba(239, 165, 69, 0.11), rgba(239, 165, 69, 0.02));
+  box-shadow: inset 0 0 0 1px rgba(239, 165, 69, 0.22), 0 14px 30px -16px rgba(239, 165, 69, 0.4);
+}
+
+/* EXECUTING: data flows outward along the leaders. */
+.cc-command-hero[data-presence='executing'] .presence-leader::before {
+  animation-duration: 1.6s;
+  animation-direction: reverse;
+}
+.cc-command-hero[data-presence='executing'] .presence-tel--right .presence-leader::before {
+  animation-direction: normal;
+}
+
+/* SUCCESS: one restrained confirmation pulse across the frame. */
+.cc-command-hero[data-presence='success'] {
+  animation: success-pulse 1.6s var(--ease-premium) 1;
+}
+@keyframes success-pulse {
+  0% { box-shadow: var(--inner-highlight), 0 0 0 0 rgba(62, 203, 133, 0); }
+  35% { box-shadow: var(--inner-highlight), 0 0 0 1px rgba(62, 203, 133, 0.35), 0 0 60px -20px rgba(62, 203, 133, 0.45); }
+  100% { box-shadow: var(--inner-highlight), 0 0 0 1px rgba(0, 0, 0, 0.4), 0 0 60px -30px rgba(62, 203, 133, 0.25); }
+}
+
+/* ERROR: localized, not a red screen. */
+.cc-command-hero[data-presence='error'] .cc-command-status-label {
+  animation: diag-flicker 2.8s steps(1) 2;
+}
+@keyframes diag-flicker {
+  0%, 100% { opacity: 1; }
+  48% { opacity: 0.55; }
+  52% { opacity: 1; }
+}
+
+/* ---------------- Operational flow strip ---------------- */
+
+.cc-flow {
+  list-style: none;
+  margin: 0;
+  padding: 12px 22px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-top: 1px solid rgba(150, 190, 215, 0.06);
+  background: linear-gradient(180deg, rgba(4, 8, 13, 0.6), rgba(6, 10, 16, 0.85));
+  position: relative;
+}
+.cc-flow-stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 9px;
+  align-items: center;
+  min-width: 0;
+  padding-right: 12px;
+}
+/* Connector toward the next stage. */
+.cc-flow-stage:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: 14px;
+  right: 6px;
+  top: 9px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(150, 190, 215, 0.16), rgba(150, 190, 215, 0.05));
+  transform-origin: left;
+  z-index: 0;
+}
+.cc-flow-node {
+  grid-row: 1 / span 2;
+  align-self: start;
+  margin-top: 5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid rgba(150, 190, 215, 0.35);
+  background: #070b11;
+  position: relative;
+  z-index: 1;
+  transition: all var(--dur-slow) var(--ease-premium);
+}
+.cc-flow-label {
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-3);
+  white-space: nowrap;
+  position: relative;
+  z-index: 1;
+  background: inherit;
+  width: max-content;
+  padding-right: 8px;
+  background: #060a10;
+}
+.cc-flow-detail {
+  grid-column: 2;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Completed stages stay neutral ice: only the current stage carries the state's colour. */
+.cc-flow-stage.is-done .cc-flow-node {
+  background: rgba(150, 225, 240, 0.45);
+  border-color: rgba(150, 225, 240, 0.6);
+}
+.cc-flow-stage.is-done::after {
+  background: linear-gradient(90deg, rgba(150, 225, 240, 0.4), rgba(150, 225, 240, 0.12));
+}
+.cc-flow-stage.is-done .cc-flow-detail { color: var(--text-3); }
+.cc-flow-stage.is-active .cc-flow-node {
+  background: rgb(var(--env-rgb));
+  border-color: rgb(var(--env-rgb));
+  box-shadow: 0 0 0 4px rgba(var(--env-rgb), 0.14), 0 0 12px rgba(var(--env-rgb), 0.6);
+}
+.cc-flow-stage.is-active .cc-flow-label { color: var(--text-1); }
+.cc-flow-stage.is-active .cc-flow-detail { color: rgb(var(--env-rgb)); }
+.cc-flow-stage.is-attention .cc-flow-node {
+  background: var(--amber);
+  border-color: var(--amber);
+  box-shadow: 0 0 0 4px rgba(239, 165, 69, 0.14), 0 0 12px rgba(239, 165, 69, 0.5);
+}
+.cc-flow-stage.is-attention .cc-flow-label { color: var(--text-1); }
+.cc-flow-stage.is-attention .cc-flow-detail { color: var(--amber); }
+.cc-flow-stage.is-fault .cc-flow-node {
+  border-color: var(--fail);
+  background: rgba(239, 90, 95, 0.4);
+}
+.cc-flow-stage.is-fault .cc-flow-detail { color: var(--fail); }
+
+/* ---------------- Metric ribbon ---------------- */
+
+.cc-command-ribbon {
+  background: linear-gradient(180deg, rgba(8, 13, 20, 0.85), rgba(5, 8, 13, 0.95));
+  border-top-color: rgba(150, 190, 215, 0.07);
+}
+.cc-ribbon-col {
+  border-right-color: rgba(150, 190, 215, 0.06);
+}
+.cc-ribbon-col:hover {
+  background: linear-gradient(180deg, rgba(var(--env-rgb), 0.05), transparent);
+  box-shadow: inset 0 1px 0 rgba(var(--env-rgb), 0.25);
+}
+.cc-ribbon-label {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--text-3);
+}
+.cc-ribbon-label::before {
+  content: none;
+}
+.cc-ribbon-value {
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  text-shadow: none;
+}
+.cc-ribbon-col--alert .cc-ribbon-value {
+  text-shadow: 0 0 18px rgba(239, 165, 69, 0.35);
+}
+.cc-ribbon-sub {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  letter-spacing: 0;
+  color: var(--text-4);
+}
+
+/* ---------------- Approval experience ---------------- */
+
+.cc-action-banner {
+  border-radius: var(--r-lg);
+  border: 1px solid rgba(239, 165, 69, 0.28);
+  background:
+    linear-gradient(90deg, rgba(239, 165, 69, 0.11), rgba(239, 165, 69, 0.03) 55%, rgba(10, 12, 16, 0.6)),
+    #07090d;
+  box-shadow: var(--inner-highlight), 0 18px 40px -24px rgba(239, 165, 69, 0.35);
+}
+.cc-action-banner-title {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* While a spoken approval is pending, everything else on the page steps back. */
+.route-stage:has(.cc-command-hero[data-presence='awaiting_approval']) .cc-action-banner {
+  transform: translateY(-1px);
+  box-shadow: var(--inner-highlight), 0 0 0 1px rgba(239, 165, 69, 0.3), 0 22px 50px -22px rgba(239, 165, 69, 0.5);
+}
+.route-stage:has(.cc-command-hero[data-presence='awaiting_approval']) .grid-2 .panel,
+.route-stage:has(.cc-command-hero[data-presence='awaiting_approval']) .cc-telemetry-bar {
+  opacity: 0.72;
+  filter: saturate(0.8);
+}
+
+.cc-telemetry-bar {
+  background: linear-gradient(180deg, var(--glass-top), var(--glass-bottom));
+  border-color: rgba(150, 190, 215, 0.08);
+  box-shadow: var(--inner-highlight);
+}
+.cc-telemetry-item {
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+/* ---------------- Responsive ---------------- */
+
+@media (max-width: 1180px) {
+  .cc-flow { padding: 10px 16px; }
+  .cc-flow-detail { display: none; }
+}
+
+@media (max-width: 820px) {
+  .cc-flow {
+    grid-template-columns: repeat(5, auto);
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .cc-flow-stage { padding-right: 0; }
+  .cc-flow-stage::after { display: none; }
+  .cc-flow-label { font-size: 11px; padding-right: 0; }
+  .cc-live-chip { font-size: 10.5px; padding: 3px 8px; }
+}
+
+@media (max-width: 560px) {
+  .cc-flow-stage:not(.is-active):not(.is-attention) .cc-flow-label { display: none; }
+  .cc-flow { grid-template-columns: repeat(5, auto); }
+  .cc-command-sub { display: none; }
+  .cc-command-header { padding: 12px 14px; gap: 10px; }
+  .cc-command-title { font-size: 14px; white-space: nowrap; }
+  .cc-command-status-id { white-space: nowrap; }
+  /* Live chip collapses to its pulse; the status label already names the state. */
+  .cc-live-chip { font-size: 0; gap: 0; padding: 5px; }
+  .cc-live-chip i { width: 7px; height: 7px; }
+}
+
+/* ---------------- Reduced motion ----------------
+ * Keep the composition and lighting, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .route-stage,
+  .activity.is-new,
+  .cc-live-chip,
+  .cc-live-chip i,
+  .cc-command-hero[data-presence='success'],
+  .cc-command-hero[data-presence='error'] .cc-command-status-label {
+    animation: none !important;
+  }
+  .btn:hover:not(:disabled),
+  .ops-pill:hover,
+  .btn:active:not(:disabled),
+  .row:active {
+    transform: none;
+  }
+  .cc-command-hero .presence-atmos,
+  .cc-command-hero .presence-grid,
+  .cc-command-hero .presence-plane,
+  .cc-command-hero .presence-tel,
+  .cc-command-hero .presence-callout,
+  .cc-command-hero .presence-headline,
+  .cc-command-hero .presence-services {
+    translate: none;
+    transition: none;
+  }
+  .cc-command-hero[data-presence='listening'] .presence-tel--left,
+  .cc-command-hero[data-presence='listening'] .presence-tel--right {
+    transform: translateY(-58%);
+  }
+}

@@ -8,6 +8,7 @@ import {
   RefreshCw,
   ShieldCheck,
 } from 'lucide-react';
+import { useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { CallMeButton } from '../components/ApprovalCard';
 import { ActivityItem } from '../components/ops';
@@ -22,6 +23,8 @@ import { cn } from '../lib/cn';
 import { relativeTime } from '../lib/format';
 import { ACTION_STATUS, HEALTH, PRESENCE_STATE } from '../lib/status';
 import { useNow } from '../lib/useNow';
+import { deriveOpsFlow } from '../lib/opsFlow';
+import { usePointerParallax } from '../lib/usePointerParallax';
 import { PacificOpsPresence, type PresenceServiceItem, type PresenceTelemetry } from '../presence/PacificOpsPresence';
 
 function telemetryFor(health: SystemHealthDTO | undefined): PresenceTelemetry[] {
@@ -69,6 +72,8 @@ export function CommandCenterPage() {
     else if (health.data?.overall === 'degraded') statusLabel = 'DEGRADED';
   }
   const sessionHud = runtimeHud(runtime, view);
+  const heroRef = useRef<HTMLElement>(null);
+  usePointerParallax(heroRef);
   const sessionHeadline = runtimeHeadline(runtime, view);
 
   const pending = (actions.data ?? []).filter((a) => a.status === 'AWAITING_APPROVAL');
@@ -134,15 +139,25 @@ export function CommandCenterPage() {
       />
 
       {/* Hero card matching exact Pacific Ops architecture */}
-      <section className="cc-command-hero" aria-label="Pacific Ops Command Hero">
+      <section
+        ref={heroRef}
+        className={cn('cc-command-hero', view.sessionActive && 'is-live', view.signal !== 'live' && view.signal !== 'demo' && 'is-degraded')}
+        data-presence={presenceState}
+        aria-label="Pacific Ops Command Hero"
+      >
         <header className="cc-command-header">
           <div className="cc-command-brand">
-            <h1 className="cc-command-title">PACIFIC RISING OPS</h1>
-            <span className="cc-command-sub">Pacific Horizon Labs</span>
+            <h1 className="cc-command-title">Pacific Rising Ops</h1>
+            <span className="cc-command-sub">Command Center · Pacific Horizon Labs</span>
           </div>
+          {view.sessionActive && (
+            <span className="cc-live-chip" role="status">
+              <i aria-hidden /> Live voice session
+            </span>
+          )}
           <div className={cn('cc-command-status', presenceTone)}>
             <div className="cc-command-status-id">
-              <span>PACIFIC OPS</span>
+              <span>Pacific Ops</span>
               <i className={cn('dot', presenceTone, presenceState !== 'error' && 'dot--live')} aria-hidden />
             </div>
             <div className="cc-command-status-label">{statusLabel}</div>
@@ -170,9 +185,19 @@ export function CommandCenterPage() {
           />
         </div>
 
+        <ol className="cc-flow" aria-label="Operational flow">
+          {deriveOpsFlow(runtime, view.sessionActive, counts).map((stage) => (
+            <li key={stage.key} className={cn('cc-flow-stage', `is-${stage.status}`)}>
+              <span className="cc-flow-node" aria-hidden />
+              <span className="cc-flow-label">{stage.label}</span>
+              {stage.detail && <span className="cc-flow-detail">{stage.detail}</span>}
+            </li>
+          ))}
+        </ol>
+
         <footer className="cc-command-ribbon" aria-label="Operational metrics">
           <Link to="/inbox" className="cc-ribbon-col">
-            <span className="cc-ribbon-label">INBOX</span>
+            <span className="cc-ribbon-label">Inbox</span>
             <span className="cc-ribbon-value">{counts?.inbox ?? '—'}</span>
             <span className="cc-ribbon-sub">
               {!counts ? 'No data' : counts.needsAttention ? `${counts.needsAttention} need attention` : 'Inbox nominal'}
@@ -182,19 +207,19 @@ export function CommandCenterPage() {
             to="/approvals"
             className={cn('cc-ribbon-col', counts && counts.pendingApprovals > 0 && 'cc-ribbon-col--alert')}
           >
-            <span className="cc-ribbon-label">APPROVALS</span>
+            <span className="cc-ribbon-label">Approvals</span>
             <span className="cc-ribbon-value">{counts?.pendingApprovals ?? 0}</span>
             <span className={cn('cc-ribbon-sub', counts && counts.pendingApprovals > 0 && 'alert')}>
-              {!counts ? 'No data' : counts.pendingApprovals > 0 ? 'APPROVAL REQUIRED' : 'Nothing waiting'}
+              {!counts ? 'No data' : counts.pendingApprovals > 0 ? 'Approval required' : 'Nothing waiting'}
             </span>
           </Link>
           <Link to="/leads" className="cc-ribbon-col">
-            <span className="cc-ribbon-label">LEADS</span>
+            <span className="cc-ribbon-label">Leads</span>
             <span className="cc-ribbon-value">{counts?.activeLeads ?? '—'}</span>
             <span className="cc-ribbon-sub">Active pipeline</span>
           </Link>
           <Link to="/calls" className="cc-ribbon-col">
-            <span className="cc-ribbon-label">CALLS</span>
+            <span className="cc-ribbon-label">Calls</span>
             <span className="cc-ribbon-value">{counts?.callsToday ?? counts?.calls ?? '—'}</span>
             <span className="cc-ribbon-sub">
               {summary.data?.lastCallAt ? `Last ${relativeTime(summary.data.lastCallAt, now)}` : counts ? `${counts.callsToday} sessions today` : 'No data'}
@@ -208,7 +233,7 @@ export function CommandCenterPage() {
           <div className="cc-action-banner-info">
             <i className="dot tone-warn dot--live" aria-hidden />
             <div>
-              <span className="cc-action-banner-title">APPROVAL REQUIRED</span>
+              <span className="cc-action-banner-title">Approval required</span>
               <span className="cc-action-banner-desc">
                 {counts.pendingApprovals} reply draft{counts.pendingApprovals === 1 ? '' : 's'} waiting on owner review
               </span>
