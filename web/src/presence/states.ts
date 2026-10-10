@@ -32,19 +32,33 @@ export interface PresenceParams {
   green: number;
   /** synthetic voice activity when no audio level is supplied */
   voice: number;
-  /** slow ambient drift speed multiplier */
+  /** slow ambient drift speed multiplier (low = suspended) */
   drift: number;
+  /** peripheral particles pulled inward toward the form (listening) */
+  converge: number;
+  /** activity of pulses travelling along neural pathways */
+  neural: number;
+  /** visibility of the slowly rotating data rings */
+  rings: number;
 }
 
 export const STATE_PARAMS: Record<PacificOpsState, PresenceParams> = {
-  idle: { form: 0.3, energy: 0.72, amber: 0.06, core: 0.38, orbit: 0, stream: 0, wave: 0, scan: 0.25, jitter: 0, red: 0, green: 0, voice: 0, drift: 1 },
-  listening: { form: 0.62, energy: 0.9, amber: 0.12, core: 0.6, orbit: 0, stream: 0, wave: 1, scan: 0.55, jitter: 0, red: 0, green: 0, voice: 0, drift: 0.8 },
-  thinking: { form: 0.84, energy: 0.95, amber: 0.85, core: 0.65, orbit: 1, stream: 0, wave: 0.15, scan: 0.8, jitter: 0, red: 0, green: 0, voice: 0, drift: 0.7 },
-  speaking: { form: 1, energy: 1, amber: 0.55, core: 0.9, orbit: 0.15, stream: 0, wave: 0.25, scan: 0.2, jitter: 0, red: 0, green: 0, voice: 1, drift: 0.6 },
-  awaiting_approval: { form: 0.8, energy: 0.82, amber: 0.6, core: 0.5, orbit: 0, stream: 0, wave: 0, scan: 0.35, jitter: 0, red: 0, green: 0, voice: 0, drift: 0.8 },
-  executing: { form: 0.92, energy: 1, amber: 0.3, core: 1, orbit: 0.3, stream: 1, wave: 0, scan: 0.4, jitter: 0, red: 0, green: 0, voice: 0, drift: 0.7 },
-  success: { form: 0.95, energy: 0.95, amber: 0.12, core: 0.8, orbit: 0, stream: 0, wave: 0, scan: 0, jitter: 0, red: 0, green: 0.4, voice: 0, drift: 0.7 },
-  error: { form: 0.55, energy: 0.62, amber: 0, core: 0.22, orbit: 0, stream: 0, wave: 0, scan: 0, jitter: 1, red: 1, green: 0, voice: 0, drift: 1.2 },
+  // Partially resolved (~70% form), slow drift, quiet chest pulse.
+  idle: { form: 0.62, energy: 0.8, amber: 0.16, core: 0.45, orbit: 0.1, stream: 0, wave: 0, scan: 0.35, jitter: 0, red: 0, green: 0, voice: 0, drift: 1, converge: 0, neural: 0.35, rings: 0.5 },
+  // Face assembles, periphery converges, cyan rings radiate from the head.
+  listening: { form: 0.78, energy: 0.92, amber: 0.2, core: 0.6, orbit: 0.08, stream: 0, wave: 1, scan: 0.5, jitter: 0, red: 0, green: 0, voice: 0, drift: 0.7, converge: 0.75, neural: 0.5, rings: 0.6 },
+  // Amber cognition field rises, neural traces orbit the head.
+  thinking: { form: 0.86, energy: 0.95, amber: 0.95, core: 0.62, orbit: 1, stream: 0, wave: 0.1, scan: 0.7, jitter: 0, red: 0, green: 0, voice: 0, drift: 0.6, converge: 0.3, neural: 1, rings: 0.9 },
+  // Contours pulse with audio; neck and chest pathways react.
+  speaking: { form: 0.97, energy: 1, amber: 0.5, core: 0.85, orbit: 0.15, stream: 0, wave: 0.2, scan: 0.25, jitter: 0, red: 0, green: 0, voice: 1, drift: 0.55, converge: 0.2, neural: 0.8, rings: 0.6 },
+  // Restrained amber, motion suspended.
+  awaiting_approval: { form: 0.84, energy: 0.82, amber: 0.7, core: 0.5, orbit: 0.04, stream: 0, wave: 0, scan: 0.3, jitter: 0, red: 0, green: 0, voice: 0, drift: 0.22, converge: 0.15, neural: 0.4, rings: 0.4 },
+  // Chest core intensifies, streams leave the core.
+  executing: { form: 0.92, energy: 1, amber: 0.3, core: 1, orbit: 0.3, stream: 1, wave: 0, scan: 0.45, jitter: 0, red: 0, green: 0, voice: 0, drift: 0.6, converge: 0.2, neural: 0.9, rings: 0.8 },
+  // Clean cyan-to-green pulse; form briefly stabilises.
+  success: { form: 1, energy: 0.95, amber: 0.12, core: 0.85, orbit: 0, stream: 0, wave: 0, scan: 0, jitter: 0, red: 0, green: 0.5, voice: 0, drift: 0.5, converge: 0.3, neural: 0.5, rings: 0.6 },
+  // Mild decoherence; red stays on localized diagnostic fragments only.
+  error: { form: 0.6, energy: 0.66, amber: 0, core: 0.25, orbit: 0, stream: 0, wave: 0, scan: 0, jitter: 1, red: 1, green: 0, voice: 0, drift: 1.2, converge: 0, neural: 0.1, rings: 0.2 },
 };
 
 export const PRESENCE_STATES: PacificOpsState[] = [

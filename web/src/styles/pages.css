@@ -27,7 +27,7 @@
   flex-direction: column;
   min-height: 500px;
   border-radius: var(--r-lg);
-  border: 1px solid var(--line-bright);
+  border: 1px solid var(--line-accent);
   background:
     radial-gradient(ellipse 90% 70% at 50% 35%, rgba(0, 240, 255, 0.08), transparent 70%),
     linear-gradient(180deg, #030814 0%, #010307 100%);
@@ -83,7 +83,7 @@
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.12em;
-  color: var(--cyan-soft);
+  color: var(--text-3);
   text-transform: uppercase;
 }
 
@@ -124,14 +124,15 @@
 .cc-command-stage {
   position: relative;
   flex: 1;
-  min-height: 400px;
+  /* The entity needs room to be the centrepiece: scale with the viewport, within limits. */
+  min-height: clamp(420px, 56vh, 640px);
   display: flex;
   overflow: hidden;
   background: #020408;
 }
 
 .cc-command-stage .presence {
-  min-height: 400px;
+  min-height: clamp(420px, 56vh, 640px);
 }
 
 .cc-command-ribbon {
@@ -778,10 +779,10 @@
 
 @media (max-width: 767px) {
   .cc-command-stage {
-    min-height: 320px;
+    min-height: 420px;
   }
   .cc-command-stage .presence {
-    min-height: 320px;
+    min-height: 420px;
   }
   .cc-command-ribbon {
     grid-template-columns: repeat(2, minmax(0, 1fr));

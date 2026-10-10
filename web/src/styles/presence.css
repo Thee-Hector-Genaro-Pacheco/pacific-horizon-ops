@@ -1,5 +1,14 @@
 /* ================================================================
- * Pacific Ops holographic presence
+ * Pacific Ops holographic presence (V2)
+ *
+ * Layer order inside .presence-stage, back to front:
+ *   atmos (z1)  deep volumetric gradients
+ *   grid  (z1)  faint receding floor plane
+ *   plane (z2)  atmospheric scanning plane, BEHIND the entity
+ *   halo  (z3)  state-tinted volume around head and core
+ *   canvas(z5)  WebGL entity, transparent & additive
+ *   vignette(z8) cinematic edge falloff
+ * HUD (z10) sits on top and never intercepts pointer events.
  * ================================================================ */
 
 .presence {
@@ -9,16 +18,13 @@
   min-height: 300px;
   isolation: isolate;
   overflow: hidden;
-  background:
-    radial-gradient(ellipse 90% 60% at 50% 50%, #030812 0%, #010307 100%),
-    #020408;
+  /* Near-black base: whatever the canvas does, this area can never read as white. */
+  background: #02050a;
 }
 
 .presence-stage {
   position: absolute;
   inset: 0;
-  background: transparent;
-  perspective: 900px;
   overflow: hidden;
 }
 
@@ -29,231 +35,127 @@
   height: 100%;
   display: block;
   z-index: 5;
+  background: transparent;
 }
 
-/* 3D Holographic Perspective Floor Grid */
+.presence-atmos {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(34% 52% at 50% 38%, rgba(32, 150, 170, 0.11), transparent 72%),
+    radial-gradient(60% 70% at 50% 60%, rgba(10, 60, 80, 0.22), transparent 75%),
+    radial-gradient(120% 90% at 50% 120%, rgba(6, 30, 44, 0.5), transparent 60%);
+}
+
+/* Receding floor plane: depth cue only, barely there. */
 .presence-grid {
   position: absolute;
-  bottom: -40px;
+  bottom: -30px;
   left: -20%;
   width: 140%;
-  height: 48%;
-  transform: perspective(400px) rotateX(72deg);
+  height: 42%;
+  transform: perspective(420px) rotateX(74deg);
   transform-origin: bottom center;
   background-image:
-    linear-gradient(90deg, rgba(0, 240, 255, 0.08) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(0, 240, 255, 0.08) 1px, transparent 1px);
-  background-size: 32px 32px;
-  mask-image: radial-gradient(ellipse 70% 65% at 50% 85%, black 25%, transparent 80%);
-  -webkit-mask-image: radial-gradient(ellipse 70% 65% at 50% 85%, black 25%, transparent 80%);
+    linear-gradient(90deg, rgba(90, 220, 235, 0.06) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(90, 220, 235, 0.06) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: radial-gradient(ellipse 60% 70% at 50% 92%, black 20%, transparent 78%);
+  -webkit-mask-image: radial-gradient(ellipse 60% 70% at 50% 92%, black 20%, transparent 78%);
   pointer-events: none;
-  opacity: 0.85;
+  opacity: 0.55;
   z-index: 1;
 }
 
-/* Volumetric projector beam radiating upward */
-.presence-projector {
+/* Atmospheric scanning plane: a soft band of light drifting behind the entity.
+ * It replaces the old bright laser line that cut the figure in half. */
+.presence-plane {
   position: absolute;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 70%;
-  height: 85%;
-  background:
-    conic-gradient(from 180deg at 50% 100%, transparent 75deg, rgba(0, 240, 255, 0.045) 85deg, rgba(0, 240, 255, 0.08) 90deg, rgba(0, 240, 255, 0.045) 95deg, transparent 105deg);
-  mask-image: linear-gradient(0deg, black 10%, transparent 95%);
-  -webkit-mask-image: linear-gradient(0deg, black 10%, transparent 95%);
-  pointer-events: none;
+  left: 8%;
+  right: 8%;
+  height: 26%;
+  top: 30%;
   z-index: 2;
-  animation: holo-flicker 8s ease-in-out infinite alternate;
-}
-
-/* Hologram pedestal concentric emitter rings */
-.presence-emitter {
-  position: absolute;
-  bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%) scaleY(0.35);
-  width: 320px;
-  height: 120px;
-  border-radius: 50%;
-  border: 1px solid rgba(0, 240, 255, 0.35);
-  box-shadow:
-    0 0 25px rgba(0, 240, 255, 0.25),
-    inset 0 0 20px rgba(0, 240, 255, 0.2);
   pointer-events: none;
-  z-index: 2;
-  animation: holo-pulse 4s ease-in-out infinite;
+  background: linear-gradient(180deg, transparent, rgba(80, 210, 230, 0.035) 35%, rgba(110, 225, 240, 0.05) 50%, rgba(80, 210, 230, 0.035) 65%, transparent);
+  mask-image: radial-gradient(ellipse 50% 100% at 50% 50%, black 30%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse 50% 100% at 50% 50%, black 30%, transparent 80%);
+  animation: holo-plane 16s ease-in-out infinite;
 }
 
-.presence-emitter::before {
-  content: '';
-  position: absolute;
-  inset: 22px;
-  border-radius: 50%;
-  border: 1px dashed rgba(0, 240, 255, 0.4);
-  box-shadow: 0 0 15px rgba(0, 240, 255, 0.2);
-}
-
-.presence-emitter::after {
-  content: '';
-  position: absolute;
-  inset: 44px;
-  border-radius: 50%;
-  background: radial-gradient(ellipse at center, rgba(0, 240, 255, 0.35), transparent 70%);
-  box-shadow: 0 0 30px rgba(0, 240, 255, 0.4);
-}
-
-/* Sweeping laser scanline */
-.presence-scanline {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: linear-gradient(90deg, transparent 10%, rgba(0, 240, 255, 0.5) 50%, transparent 90%);
-  box-shadow: 0 0 12px rgba(0, 240, 255, 0.6), 0 0 3px #ffffff;
-  pointer-events: none;
-  z-index: 6;
-  opacity: 0.6;
-  animation: holo-scan 6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-}
-
-/* Background atmospheric halo */
 .presence-halo {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(42% 48% at 50% 45%, rgba(0, 240, 255, 0.09), transparent 70%),
-    radial-gradient(28% 28% at 50% 68%, rgba(0, 240, 255, 0.07), transparent 70%);
-  transition: opacity var(--dur-4) var(--ease-out);
   pointer-events: none;
   z-index: 3;
-}
-
-/* State-specific halo and energy variations */
-.presence--awaiting-approval .presence-halo,
-.presence--thinking .presence-halo {
   background:
-    radial-gradient(35% 38% at 50% 42%, rgba(255, 158, 27, 0.12), transparent 70%),
-    radial-gradient(45% 50% at 50% 46%, rgba(0, 240, 255, 0.08), transparent 70%);
+    radial-gradient(18% 30% at 50% 34%, rgba(70, 215, 235, 0.07), transparent 70%),
+    radial-gradient(14% 18% at 50% 64%, rgba(70, 215, 235, 0.06), transparent 70%);
+  transition: background var(--dur-4) var(--ease-out);
 }
 
-.presence--awaiting-approval .presence-emitter,
-.presence--thinking .presence-emitter {
-  border-color: rgba(255, 158, 27, 0.45);
-  box-shadow:
-    0 0 25px rgba(255, 158, 27, 0.3),
-    inset 0 0 20px rgba(255, 158, 27, 0.2);
+.presence--thinking .presence-halo,
+.presence--awaiting-approval .presence-halo {
+  background:
+    radial-gradient(16% 26% at 50% 32%, rgba(239, 165, 69, 0.08), transparent 70%),
+    radial-gradient(14% 18% at 50% 64%, rgba(70, 215, 235, 0.05), transparent 70%);
 }
 
-.presence--awaiting-approval .presence-scanline,
-.presence--thinking .presence-scanline {
-  background: linear-gradient(90deg, transparent 10%, rgba(255, 158, 27, 0.7) 50%, transparent 90%);
-  box-shadow: 0 0 12px rgba(255, 158, 27, 0.7), 0 0 3px #ffffff;
-}
-
-.presence--error .presence-halo {
-  background: radial-gradient(40% 44% at 50% 44%, rgba(255, 62, 85, 0.12), transparent 70%);
-}
-
-.presence--error .presence-emitter {
-  border-color: rgba(255, 62, 85, 0.5);
-  box-shadow: 0 0 25px rgba(255, 62, 85, 0.4);
-}
-
-.presence--error .presence-scanline {
-  background: linear-gradient(90deg, transparent 10%, rgba(255, 62, 85, 0.7) 50%, transparent 90%);
-  box-shadow: 0 0 12px rgba(255, 62, 85, 0.7);
+.presence--executing .presence-halo {
+  background:
+    radial-gradient(18% 30% at 50% 34%, rgba(70, 215, 235, 0.06), transparent 70%),
+    radial-gradient(22% 26% at 50% 64%, rgba(150, 235, 245, 0.1), transparent 70%);
 }
 
 .presence--success .presence-halo {
-  background: radial-gradient(40% 45% at 50% 45%, rgba(0, 255, 178, 0.12), transparent 70%);
+  background: radial-gradient(22% 30% at 50% 50%, rgba(62, 203, 133, 0.07), transparent 70%);
 }
 
-.presence--executing .presence-scanline {
-  animation-duration: 2.5s;
+/* Error never floods the stage red; only a faint diagnostic warmth. */
+.presence--error .presence-halo {
+  background: radial-gradient(18% 26% at 50% 40%, rgba(239, 90, 95, 0.04), transparent 70%);
 }
 
-/* Suspense placeholder (never blank or white!) */
+.presence-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 95% at 50% 45%, transparent 55%, rgba(1, 3, 6, 0.75) 100%),
+    linear-gradient(180deg, rgba(1, 3, 6, 0.35), transparent 14%, transparent 82%, rgba(1, 3, 6, 0.55));
+}
+
+/* Suspense placeholder: dark, never blank or white. */
 .presence-placeholder {
   position: absolute;
-  inset: 22% 32%;
+  inset: 20% 36%;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(0, 240, 255, 0.15), transparent 70%);
-  animation: holo-pulse 2s ease-in-out infinite;
+  background: radial-gradient(circle, rgba(70, 215, 235, 0.1), transparent 70%);
+  animation: breathe 3.2s var(--ease-in-out) infinite;
   z-index: 4;
 }
 
-/* Corner Reticle Brackets */
+/* Corner reticles */
 .presence-corner {
   position: absolute;
-  width: 16px;
-  height: 16px;
-  border-color: rgba(0, 240, 255, 0.5);
+  width: 14px;
+  height: 14px;
+  border-color: rgba(120, 220, 235, 0.28);
   border-style: solid;
   border-width: 0;
-  z-index: 7;
+  z-index: 9;
   pointer-events: none;
-  filter: drop-shadow(0 0 4px rgba(0, 240, 255, 0.4));
 }
+.presence-corner.tl { top: 14px; left: 14px; border-top-width: 1px; border-left-width: 1px; }
+.presence-corner.tr { top: 14px; right: 14px; border-top-width: 1px; border-right-width: 1px; }
+.presence-corner.bl { bottom: 14px; left: 14px; border-bottom-width: 1px; border-left-width: 1px; }
+.presence-corner.br { bottom: 14px; right: 14px; border-bottom-width: 1px; border-right-width: 1px; }
 
-.presence-corner.tl {
-  top: 14px;
-  left: 14px;
-  border-top-width: 1.5px;
-  border-left-width: 1.5px;
-}
+/* ---------------- HUD ---------------- */
 
-.presence-corner.tr {
-  top: 14px;
-  right: 14px;
-  border-top-width: 1.5px;
-  border-right-width: 1.5px;
-}
-
-.presence-corner.bl {
-  bottom: 14px;
-  left: 14px;
-  border-bottom-width: 1.5px;
-  border-left-width: 1.5px;
-}
-
-.presence-corner.br {
-  bottom: 14px;
-  right: 14px;
-  border-bottom-width: 1.5px;
-  border-right-width: 1.5px;
-}
-
-/* Lateral HUD tactical brackets */
-.presence-bracket {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 6px;
-  height: 48px;
-  border-style: solid;
-  border-color: rgba(0, 240, 255, 0.35);
-  border-width: 0;
-  pointer-events: none;
-  z-index: 7;
-}
-
-.presence-bracket--left {
-  left: 14px;
-  border-left-width: 1.5px;
-  border-top-width: 1.5px;
-  border-bottom-width: 1.5px;
-}
-
-.presence-bracket--right {
-  right: 14px;
-  border-right-width: 1.5px;
-  border-top-width: 1.5px;
-  border-bottom-width: 1.5px;
-}
-
-/* HUD Overlay */
 .presence-hud {
   position: absolute;
   inset: 0;
@@ -270,107 +172,206 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 14px;
-  border-radius: var(--r-sm);
-  background: rgba(3, 8, 16, 0.75);
-  border: 1px solid color-mix(in srgb, var(--tone) 40%, rgba(0, 240, 255, 0.2));
-  box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.6),
-    0 0 14px color-mix(in srgb, var(--tone) 25%, transparent),
-    inset 0 0 10px color-mix(in srgb, var(--tone) 15%, transparent);
-  font-size: 10.5px;
-  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: var(--r-xs);
+  background: rgba(3, 8, 14, 0.6);
+  border: 1px solid color-mix(in srgb, var(--tone) 30%, transparent);
+  font-size: 10px;
+  font-weight: 600;
   letter-spacing: 0.18em;
   color: var(--tone);
   white-space: nowrap;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  transition: color var(--dur-3), border-color var(--dur-3), box-shadow var(--dur-3);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: color var(--dur-3), border-color var(--dur-3);
 }
 
-.presence-status .dot {
-  width: 6px;
-  height: 6px;
-}
+.presence-status .dot { width: 6px; height: 6px; }
 
+/* Telemetry anchored to the hologram: label, then a leader running toward the entity
+ * that terminates in a small node. Leaders carry a slow travelling glint. */
 .presence-tel {
   position: absolute;
   top: 50%;
-  transform: translateY(-56%);
+  transform: translateY(-58%);
   display: grid;
-  gap: 16px;
+  gap: 18px;
 }
+
+.presence-tel--left { left: clamp(20px, 3.2vw, 44px); }
+.presence-tel--right { right: clamp(20px, 3.2vw, 44px); justify-items: end; }
 
 .presence-tel li {
+  --tone: var(--idle);
+  display: grid;
+  gap: 5px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.presence-tel li.tone-ok { --tone: var(--cyan); }
+.presence-tel li.tone-info { --tone: var(--cyan); }
+.presence-tel li.tone-warn { --tone: var(--amber); }
+.presence-tel li.tone-fail { --tone: var(--fail); }
+
+.presence-tel-label {
+  color: var(--text-2);
+}
+
+.presence-tel-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--text-2);
-  white-space: nowrap;
-  text-shadow: 0 0 8px rgba(0, 0, 0, 0.9);
+  gap: 8px;
 }
 
-.presence-tel li span::before {
+.presence-tel--right .presence-tel-row {
+  flex-direction: row-reverse;
+}
+
+.presence-tel-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--tone);
+}
+
+.presence-tel-value::before {
   content: '';
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-right: 8px;
-  vertical-align: 1px;
-  background: var(--tone, var(--idle));
-  border-radius: 1px;
-  box-shadow: 0 0 6px var(--tone, var(--idle));
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--tone);
+  background: radial-gradient(circle, var(--tone) 0 35%, transparent 45%);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--tone) 55%, transparent);
 }
 
-.presence-tel--left {
-  left: 28px;
-}
-
-.presence-tel--right {
-  right: 28px;
-  justify-items: end;
+.presence-tel li.tone-idle .presence-tel-value::before {
+  box-shadow: none;
 }
 
 .presence-leader {
+  position: relative;
   display: block;
-  width: 38px;
+  width: clamp(36px, 5vw, 76px);
   height: 1px;
-  background: linear-gradient(90deg, rgba(0, 240, 255, 0.4), transparent);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--tone) 45%, transparent), color-mix(in srgb, var(--tone) 8%, transparent));
+  overflow: visible;
 }
+
+/* Node where the leader meets the hologram space. */
+.presence-leader::after {
+  content: '';
+  position: absolute;
+  right: -2px;
+  top: -1.5px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--tone) 70%, transparent);
+}
+
+.presence-leader::before {
+  content: '';
+  position: absolute;
+  inset: -0.5px auto -0.5px 0;
+  width: 14px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--tone) 90%, white), transparent);
+  opacity: 0;
+  animation: leader-glint 7s linear infinite;
+}
+
+.presence-tel li:nth-child(2) .presence-leader::before { animation-delay: 1.6s; }
+.presence-tel li:nth-child(3) .presence-leader::before { animation-delay: 3.1s; }
+.presence-tel li:nth-child(4) .presence-leader::before { animation-delay: 4.7s; }
 
 .presence-tel--right .presence-leader {
-  background: linear-gradient(270deg, rgba(0, 240, 255, 0.4), transparent);
+  background: linear-gradient(270deg, color-mix(in srgb, var(--tone) 45%, transparent), color-mix(in srgb, var(--tone) 8%, transparent));
+}
+.presence-tel--right .presence-leader::after { right: auto; left: -2px; }
+.presence-tel--right .presence-leader::before { animation-direction: reverse; }
+
+/* Right-side annotations are a single line: COUNT ──────●  */
+.presence-tel--right li {
+  grid-auto-flow: column;
+  align-items: center;
+  gap: 10px;
 }
 
-.presence-tel li.tone-warn {
-  color: var(--amber);
-  text-shadow: 0 0 10px rgba(255, 158, 27, 0.4);
+.presence-tel--right .presence-tel-label {
+  color: var(--text-2);
 }
 
-.presence-tel li.tone-ok {
-  color: var(--cyan);
-  text-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+.presence-tel--right li.tone-warn .presence-tel-label,
+.presence-tel--right li.tone-fail .presence-tel-label {
+  color: var(--tone);
+}
+
+/* State callout: anchored to the upper-right of the head, leader pointing back at it. */
+.presence-callout {
+  --tone: var(--cyan);
+  position: absolute;
+  left: calc(50% + clamp(110px, 10vw, 170px));
+  top: 24%;
+  display: grid;
+  gap: 3px;
+  padding-left: 46px;
+  font-size: 9.5px;
+  letter-spacing: 0.17em;
+  white-space: nowrap;
+  animation: callout-in 600ms var(--ease-out) both;
+}
+.presence-callout.tone-warn { --tone: var(--amber); }
+.presence-callout.tone-fail { --tone: var(--fail); }
+.presence-callout-leader {
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: 38px;
+  height: 1px;
+  background: linear-gradient(270deg, color-mix(in srgb, var(--tone) 60%, transparent), transparent);
+}
+.presence-callout-leader::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: -2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  border: 1px solid var(--tone);
+}
+.presence-callout-title { color: var(--tone); font-weight: 600; }
+.presence-callout-detail { color: var(--text-3); letter-spacing: 0.1em; text-transform: uppercase; font-size: 9px; }
+
+@keyframes callout-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.presence--compact .presence-callout { display: none; }
+
+@media (max-width: 700px) {
+  .presence-callout { left: auto; right: 34px; top: 22px; padding-left: 0; justify-items: end; }
+  .presence-callout-leader { display: none; }
 }
 
 .presence-headline {
   position: absolute;
   left: 50%;
-  bottom: 52px;
+  bottom: 54px;
   transform: translateX(-50%);
-  max-width: 82%;
+  max-width: 70%;
   font-family: var(--font-display);
   font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   color: var(--text-1);
   text-align: center;
-  text-shadow:
-    0 2px 14px rgba(0, 0, 0, 0.95),
-    0 0 18px rgba(0, 240, 255, 0.25);
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.95);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -388,21 +389,18 @@
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 22px;
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 9.5px;
+  font-weight: 600;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  background: rgba(3, 8, 16, 0.65);
-  padding: 5px 18px;
+  background: rgba(3, 8, 14, 0.55);
+  padding: 5px 16px;
   border-radius: var(--r-pill);
-  border: 1px solid rgba(0, 240, 255, 0.25);
-  box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.5),
-    0 0 12px rgba(0, 240, 255, 0.15);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--line-2);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .presence-service-item {
@@ -413,38 +411,14 @@
   transition: color var(--dur-2);
 }
 
-.presence-service-item .dot {
-  width: 5px;
-  height: 5px;
-}
-
-.presence-service-item.tone-ok {
-  color: var(--cyan);
-}
-.presence-service-item.tone-ok .dot {
-  background: var(--cyan);
-  box-shadow: 0 0 8px rgba(0, 240, 255, 0.8);
-}
-
-.presence-service-item.tone-warn {
-  color: var(--amber);
-}
-.presence-service-item.tone-warn .dot {
-  background: var(--amber);
-  box-shadow: 0 0 8px rgba(255, 158, 27, 0.8);
-}
-
-.presence-service-item.tone-fail {
-  color: var(--fail);
-}
-.presence-service-item.tone-fail .dot {
-  background: var(--fail);
-  box-shadow: 0 0 8px rgba(255, 62, 85, 0.8);
-}
-
-.presence-service-item.tone-idle .dot {
-  background: var(--idle);
-}
+.presence-service-item .dot { width: 5px; height: 5px; }
+.presence-service-item.tone-ok .dot { background: var(--ok); box-shadow: 0 0 8px rgba(62, 203, 133, 0.6); }
+.presence-service-item.tone-warn { color: var(--amber); }
+.presence-service-item.tone-warn .dot { background: var(--amber); box-shadow: 0 0 8px rgba(239, 165, 69, 0.6); }
+.presence-service-item.tone-fail { color: var(--fail); }
+.presence-service-item.tone-fail .dot { background: var(--fail); box-shadow: 0 0 8px rgba(239, 90, 95, 0.6); }
+.presence-service-item.tone-idle { color: var(--text-3); }
+.presence-service-item.tone-idle .dot { background: var(--idle); }
 
 .presence-note {
   position: absolute;
@@ -457,7 +431,8 @@
 }
 
 .presence--compact .presence-tel,
-.presence--compact .presence-services {
+.presence--compact .presence-services,
+.presence--compact .presence-grid {
   display: none;
 }
 
@@ -466,44 +441,38 @@
   font-size: var(--fs-sm);
 }
 
-@keyframes holo-scan {
-  0% {
-    top: 5%;
-    opacity: 0.1;
-  }
-  15% {
-    opacity: 0.65;
-  }
-  85% {
-    opacity: 0.65;
-  }
-  100% {
-    top: 92%;
-    opacity: 0.1;
+@keyframes holo-plane {
+  0%, 100% { transform: translateY(-30%); opacity: 0.6; }
+  50% { transform: translateY(60%); opacity: 1; }
+}
+
+@keyframes leader-glint {
+  0% { left: 0; opacity: 0; }
+  8% { opacity: 1; }
+  22% { left: calc(100% - 14px); opacity: 0; }
+  100% { left: calc(100% - 14px); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .presence-plane,
+  .presence-leader::before,
+  .presence-placeholder {
+    animation: none;
   }
 }
 
-@keyframes holo-pulse {
-  0%, 100% {
-    transform: translateX(-50%) scaleY(0.35) scale(1);
-    opacity: 0.75;
-  }
-  50% {
-    transform: translateX(-50%) scaleY(0.35) scale(1.04);
-    opacity: 1;
-  }
+/* iPad: keep telemetry, but tighter and only the first three items per side. */
+@media (max-width: 1180px) {
+  .presence-tel { gap: 14px; }
+  .presence-tel li { font-size: 9px; letter-spacing: 0.14em; }
+  .presence-tel li:nth-child(n + 4) { display: none; }
+  .presence-leader { width: 30px; }
 }
 
-@keyframes holo-flicker {
-  0%, 100% { opacity: 0.85; }
-  30% { opacity: 0.95; }
-  35% { opacity: 0.75; }
-  70% { opacity: 0.9; }
-  85% { opacity: 0.8; }
-}
-
-@media (max-width: 900px) {
-  .presence-tel {
-    display: none;
-  }
+/* Phone: the entity and its headline carry the stage; side telemetry moves out. */
+@media (max-width: 700px) {
+  .presence-tel { display: none; }
+  .presence-grid { display: none; }
+  .presence-headline { font-size: 13px; max-width: 88%; bottom: 50px; }
+  .presence-services { gap: 14px; padding: 4px 12px; font-size: 9px; }
 }

@@ -24,18 +24,24 @@ import { PacificOpsPresence, type PresenceServiceItem, type PresenceTelemetry } 
 import { STATE_STATUS } from '../presence/states';
 
 function telemetryFor(health: SystemHealthDTO | undefined): PresenceTelemetry[] {
-  if (!health) return [{ label: 'Checking systems', tone: 'tone-idle' }];
+  if (!health) return [{ label: 'Systems', value: 'CHECKING', tone: 'tone-idle' }];
   const by = Object.fromEntries(health.components.map((c) => [c.key, c]));
-  const word = (key: string, online: string) => {
+  const item = (key: string, label: string, online: string): PresenceTelemetry => {
     const c = by[key];
-    if (!c) return 'UNKNOWN';
-    return c.status === 'online' ? online : c.status === 'configured' ? 'CONFIGURED' : c.status.toUpperCase();
+    // No signal is reported as unknown, never as healthy.
+    if (!c) return { label, value: 'NO SIGNAL', tone: 'tone-idle' };
+    const value = c.status === 'online' ? online : c.status === 'configured' ? 'CONFIGURED' : c.status.toUpperCase();
+    return { label, value, tone: HEALTH[c.status].tone };
   };
   return [
-    { label: `System ${health.overall === 'healthy' ? 'online' : health.overall}`, tone: health.overall === 'healthy' ? 'tone-ok' : health.overall === 'down' ? 'tone-fail' : 'tone-warn' },
-    { label: `Voice link ${by.voice?.status === 'online' ? 'active' : 'standby'}`, tone: by.voice?.status === 'online' ? 'tone-ok' : 'tone-idle' },
-    { label: `Gmail ${word('gmail', 'connected')}`, tone: by.gmail ? HEALTH[by.gmail.status].tone : 'tone-idle' },
-    { label: `Twilio ${word('twilio', 'connected')}`, tone: by.twilio ? HEALTH[by.twilio.status].tone : 'tone-idle' },
+    item('voice', 'Voice link', 'ACTIVE'),
+    item('gmail', 'Gmail', 'CONNECTED'),
+    item('twilio', 'Twilio', 'CONNECTED'),
+    {
+      label: 'Core',
+      value: health.overall === 'healthy' ? 'NOMINAL' : health.overall.toUpperCase(),
+      tone: health.overall === 'healthy' ? 'tone-ok' : health.overall === 'down' ? 'tone-fail' : 'tone-warn',
+    },
   ];
 }
 
@@ -82,18 +88,18 @@ export function CommandCenterPage() {
   const serviceIndicators: PresenceServiceItem[] = [
     {
       name: 'GMAIL',
-      tone: by.gmail ? HEALTH[by.gmail.status].tone : 'tone-ok',
-      statusText: by.gmail ? `Gmail: ${by.gmail.status.toUpperCase()}` : 'Gmail connected',
+      tone: by.gmail ? HEALTH[by.gmail.status].tone : 'tone-idle',
+      statusText: by.gmail ? `Gmail: ${by.gmail.status.toUpperCase()}` : 'Gmail: no health signal',
     },
     {
       name: 'TWILIO',
-      tone: by.twilio ? HEALTH[by.twilio.status].tone : 'tone-ok',
-      statusText: by.twilio ? `Twilio: ${by.twilio.status.toUpperCase()}` : 'Twilio connected',
+      tone: by.twilio ? HEALTH[by.twilio.status].tone : 'tone-idle',
+      statusText: by.twilio ? `Twilio: ${by.twilio.status.toUpperCase()}` : 'Twilio: no health signal',
     },
     {
       name: 'VOICE',
-      tone: by.voice?.status === 'online' ? 'tone-ok' : by.voice ? HEALTH[by.voice.status].tone : 'tone-ok',
-      statusText: by.voice ? `Voice link: ${by.voice.status.toUpperCase()}` : 'Voice link active',
+      tone: by.voice?.status === 'online' ? 'tone-ok' : by.voice ? HEALTH[by.voice.status].tone : 'tone-idle',
+      statusText: by.voice ? `Voice link: ${by.voice.status.toUpperCase()}` : 'Voice link: no health signal',
     },
   ];
 
@@ -160,9 +166,9 @@ export function CommandCenterPage() {
         <footer className="cc-command-ribbon" aria-label="Operational metrics">
           <Link to="/inbox" className="cc-ribbon-col">
             <span className="cc-ribbon-label">INBOX</span>
-            <span className="cc-ribbon-value">{counts?.inbox ?? 3}</span>
+            <span className="cc-ribbon-value">{counts?.inbox ?? '—'}</span>
             <span className="cc-ribbon-sub">
-              {counts?.needsAttention ? `${counts.needsAttention} need attention` : 'Inbox nominal'}
+              {!counts ? 'No data' : counts.needsAttention ? `${counts.needsAttention} need attention` : 'Inbox nominal'}
             </span>
           </Link>
           <Link
@@ -172,19 +178,19 @@ export function CommandCenterPage() {
             <span className="cc-ribbon-label">APPROVALS</span>
             <span className="cc-ribbon-value">{counts?.pendingApprovals ?? 0}</span>
             <span className={cn('cc-ribbon-sub', counts && counts.pendingApprovals > 0 && 'alert')}>
-              {counts && counts.pendingApprovals > 0 ? 'APPROVAL REQUIRED' : 'All approved'}
+              {!counts ? 'No data' : counts.pendingApprovals > 0 ? 'APPROVAL REQUIRED' : 'Nothing waiting'}
             </span>
           </Link>
           <Link to="/leads" className="cc-ribbon-col">
             <span className="cc-ribbon-label">LEADS</span>
-            <span className="cc-ribbon-value">{counts?.activeLeads ?? 4}</span>
+            <span className="cc-ribbon-value">{counts?.activeLeads ?? '—'}</span>
             <span className="cc-ribbon-sub">Active pipeline</span>
           </Link>
           <Link to="/calls" className="cc-ribbon-col">
             <span className="cc-ribbon-label">CALLS</span>
-            <span className="cc-ribbon-value">{counts?.callsToday ?? counts?.calls ?? 2}</span>
+            <span className="cc-ribbon-value">{counts?.callsToday ?? counts?.calls ?? '—'}</span>
             <span className="cc-ribbon-sub">
-              {summary.data?.lastCallAt ? `Last ${relativeTime(summary.data.lastCallAt, now)}` : `${counts?.callsToday ?? 2} sessions today`}
+              {summary.data?.lastCallAt ? `Last ${relativeTime(summary.data.lastCallAt, now)}` : counts ? `${counts.callsToday} sessions today` : 'No data'}
             </span>
           </Link>
         </footer>
@@ -213,8 +219,8 @@ export function CommandCenterPage() {
       <div className="cc-telemetry-bar">
         <div className="cc-telemetry-items">
           <span className="cc-telemetry-item">
-            <i className={cn('dot', health.data?.overall === 'healthy' ? 'tone-ok' : 'tone-warn')} aria-hidden />
-            <span>Core: <strong>{health.data?.overall?.toUpperCase() ?? 'HEALTHY'}</strong></span>
+            <i className={cn('dot', !health.data ? 'tone-idle' : health.data.overall === 'healthy' ? 'tone-ok' : 'tone-warn')} aria-hidden />
+            <span>Core: <strong>{health.data?.overall?.toUpperCase() ?? 'NO SIGNAL'}</strong></span>
           </span>
           <span className="cc-telemetry-item">
             <span>Last agent cycle: <strong>{relativeTime(summary.data?.lastAgentRunAt ?? null, now)}</strong></span>

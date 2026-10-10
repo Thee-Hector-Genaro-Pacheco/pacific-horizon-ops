@@ -47,7 +47,7 @@ export function SettingsPage() {
                 state={preview}
                 audioLevel={useAudio ? audio : undefined}
                 headline="Preview only, not live state"
-                telemetry={[{ label: 'Preview mode', tone: 'tone-idle' }]}
+                telemetry={[{ label: 'Mode', value: 'PREVIEW', tone: 'tone-idle' }]}
                 annotations={[{ label: STATE_STATUS[preview], tone: preview === 'awaiting_approval' ? 'tone-warn' : preview === 'error' ? 'tone-fail' : 'tone-info' }]}
               />
             </div>

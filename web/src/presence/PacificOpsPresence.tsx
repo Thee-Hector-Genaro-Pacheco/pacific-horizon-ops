@@ -7,6 +7,8 @@ const PresenceCanvas = lazy(() => import('./PresenceCanvas'));
 
 export interface PresenceTelemetry {
   label: string;
+  /** Optional status word rendered after the leader line (e.g. ACTIVE, CONNECTED). */
+  value?: string;
   tone?: ToneClass;
   live?: boolean;
 }
@@ -65,6 +67,14 @@ function supportsWebGL(): boolean {
   return webglSupport;
 }
 
+/** Spatial callout anchored beside the entity for states that need the owner's attention. */
+const STATE_CALLOUT: Partial<Record<PacificOpsState, { title: string; detail: string }>> = {
+  thinking: { title: 'PROCESSING', detail: 'Cognition active' },
+  awaiting_approval: { title: 'AWAITING AUTHORIZATION', detail: 'Owner approval required' },
+  executing: { title: 'EXECUTING', detail: 'Authorized action in progress' },
+  error: { title: 'DIAGNOSTIC', detail: 'Fault isolated · review required' },
+};
+
 const STATE_TONE: Record<PacificOpsState, ToneClass> = {
   idle: 'tone-ok',
   listening: 'tone-info',
@@ -103,10 +113,9 @@ export function PacificOpsPresence({
   return (
     <div className={cn('presence', `presence--${framing}`, `presence--${state.replace('_', '-')}`, className)} data-state={state}>
       <div className="presence-stage" aria-hidden>
+        <div className="presence-atmos" />
         <div className="presence-grid" />
-        <div className="presence-projector" />
-        <div className="presence-emitter" />
-        <div className="presence-scanline" />
+        <div className="presence-plane" />
         <div className="presence-halo" />
         <Suspense fallback={<div className="presence-placeholder" />}>
           {webgl ? (
@@ -115,12 +124,11 @@ export function PacificOpsPresence({
             <StaticPresence state={state} framing={framing} />
           )}
         </Suspense>
+        <div className="presence-vignette" />
         <span className="presence-corner tl" />
         <span className="presence-corner tr" />
         <span className="presence-corner bl" />
         <span className="presence-corner br" />
-        <span className="presence-bracket presence-bracket--left" />
-        <span className="presence-bracket presence-bracket--right" />
       </div>
 
       <div className="presence-hud">
@@ -135,8 +143,11 @@ export function PacificOpsPresence({
           <ul className="presence-tel presence-tel--left" aria-label="System links">
             {telemetry.map((t) => (
               <li key={t.label} className={t.tone ?? 'tone-idle'}>
-                <span>{t.label}</span>
-                <i className="presence-leader" aria-hidden />
+                <span className="presence-tel-label">{t.label}</span>
+                <span className="presence-tel-row">
+                  <i className="presence-leader" aria-hidden />
+                  {t.value && <span className="presence-tel-value">{t.value}</span>}
+                </span>
               </li>
             ))}
           </ul>
@@ -146,10 +157,18 @@ export function PacificOpsPresence({
             {annotations.map((t) => (
               <li key={t.label} className={t.tone ?? 'tone-idle'}>
                 <i className="presence-leader" aria-hidden />
-                <span>{t.label}</span>
+                <span className="presence-tel-label">{t.label}</span>
               </li>
             ))}
           </ul>
+        )}
+
+        {STATE_CALLOUT[state] && (
+          <div className={cn('presence-callout', tone)} key={state}>
+            <i className="presence-callout-leader" aria-hidden />
+            <span className="presence-callout-title">{STATE_CALLOUT[state]!.title}</span>
+            <span className="presence-callout-detail">{STATE_CALLOUT[state]!.detail}</span>
+          </div>
         )}
 
         {headline && <p className="presence-headline">“{headline}”</p>}
