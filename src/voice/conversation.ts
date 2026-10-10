@@ -50,6 +50,33 @@ function isCancellationPhrase(utterance: string): boolean {
 /**
  * Generates the initial greeting when ConversationRelay connects
  */
+/** Phrases asking Pacific Ops to say its last line again. Never matches approval words. */
+export function isRepeatRequest(norm: string): boolean {
+  return (
+    norm === 'repeat' ||
+    norm === 'again' ||
+    norm === 'repeat that' ||
+    norm === 'repeat it' ||
+    norm === 'say that again' ||
+    norm === 'say it again' ||
+    norm === 'one more time' ||
+    norm === 'come again' ||
+    norm === 'what did you say' ||
+    norm === 'pardon' ||
+    norm === 'sorry' ||
+    norm.startsWith('can you repeat') ||
+    norm.startsWith('could you repeat') ||
+    norm.startsWith('please repeat')
+  );
+}
+
+/** What the owner can do next with the selected message, depending on whether a draft exists. */
+function mailboxNextSteps(hasDraft: boolean): string {
+  return hasDraft
+    ? 'You can say approve, read the draft again, summarize the email again, or go back.'
+    : 'You can say draft a response, read more, or go back.';
+}
+
 export function getInitialGreeting(action: ActionRecord): string {
   return (
     `Hello! This is Horizon from Pacific Horizon Labs with an email draft awaiting your approval. ` +
@@ -128,6 +155,15 @@ export async function handleVoiceUtterance(params: {
           reason: 'Caller ended call',
         });
         return { responseText, endCall: true };
+      }
+
+      if (isRepeatRequest(norm) && session.lastSpokenText) {
+        const responseText = session.lastSpokenText;
+        voiceStore.updateConversationState(session.sessionId, 'MAILBOX_SELECTING', {
+          lastSpokenText: responseText,
+          reason: 'Repeated last response at owner request',
+        });
+        return { responseText, endCall: false };
       }
 
       const selection = parseMessageSelection(utterance);
@@ -265,6 +301,17 @@ export async function handleVoiceUtterance(params: {
       voiceStore.updateConversationState(session.sessionId, 'AWAITING_APPROVAL_CONFIRMATION', {
         lastSpokenText: responseText,
         reason: 'Unconfirmed approval response',
+      });
+      return { responseText, endCall: false };
+    }
+
+    // 2b. "repeat" / "say that again": replay the last thing Pacific Ops said, unchanged.
+    // (AWAITING_APPROVAL_CONFIRMATION is handled above and never reaches this point.)
+    if (isRepeatRequest(norm) && session.lastSpokenText) {
+      const responseText = session.lastSpokenText;
+      voiceStore.updateConversationState(session.sessionId, session.conversationState, {
+        lastSpokenText: responseText,
+        reason: 'Repeated last response at owner request',
       });
       return { responseText, endCall: false };
     }
@@ -415,7 +462,7 @@ export async function handleVoiceUtterance(params: {
         draftId,
       });
 
-      const responseText = `I created a draft reply in Gmail: "${draftText}". Would you like to approve it, or make changes?`;
+      const responseText = `I created a draft reply in Gmail: "${draftText}". ${mailboxNextSteps(true)}`;
       voiceStore.updateConversationState(session.sessionId, 'READY', {
         lastSpokenText: responseText,
         reason: 'Draft response created',
@@ -427,12 +474,14 @@ export async function handleVoiceUtterance(params: {
     if (
       norm.includes('read draft') ||
       norm.includes('read the draft') ||
+      norm.includes('draft again') ||
+      norm.includes('repeat the draft') ||
       norm.includes('what is the draft') ||
       norm === 'the draft'
     ) {
       const draftReply = (session.metadata?.draftReply as string) || null;
       if (draftReply) {
-        const responseText = `The proposed draft reply is: "${draftReply}". Would you like to approve it, or make changes?`;
+        const responseText = `The proposed draft reply is: "${draftReply}". ${mailboxNextSteps(true)}`;
         voiceStore.updateConversationState(session.sessionId, 'READING_DRAFT', {
           lastSpokenText: responseText,
         });
@@ -455,7 +504,8 @@ export async function handleVoiceUtterance(params: {
       norm.includes('give me a summary')
     ) {
       const summary = selectedMessage.snippet || selectedMessage.body.slice(0, 150).replace(/\s+/g, ' ');
-      const responseText = `Here is the summary for the email from ${selectedMessage.senderName} about "${selectedMessage.subject}": ${summary}. Would you like to draft a response, or read the full email?`;
+      const hasDraft = !!(session.metadata?.draftReply as string | null | undefined);
+      const responseText = `Here is the summary for the email from ${selectedMessage.senderName} about "${selectedMessage.subject}": ${summary}. ${mailboxNextSteps(hasDraft)}`;
       voiceStore.updateConversationState(session.sessionId, 'READING_SUMMARY', {
         lastSpokenText: responseText,
       });
@@ -470,7 +520,8 @@ export async function handleVoiceUtterance(params: {
       norm.includes('read message') ||
       norm.includes('full email')
     ) {
-      const responseText = `Here is the email from ${selectedMessage.senderName}: "${selectedMessage.body}". You can say draft a response, or go back.`;
+      const hasDraft = !!(session.metadata?.draftReply as string | null | undefined);
+      const responseText = `Here is the email from ${selectedMessage.senderName}: "${selectedMessage.body}". ${mailboxNextSteps(hasDraft)}`;
       voiceStore.updateConversationState(session.sessionId, 'READY', {
         lastSpokenText: responseText,
       });
@@ -535,18 +586,15 @@ export async function handleVoiceUtterance(params: {
     // 13. "help"
     if (norm === 'help' || norm.includes('options') || norm.includes('what can i say')) {
       const draftReply = (session.metadata?.draftReply as string) || null;
-      const responseText = draftReply
-        ? 'You can say "approve" to approve sending the draft, "read draft" to hear it again, or "go back" to select another email.'
-        : 'You can say "draft a response", "read more" to hear the full message, or "go back" to select another email.';
+      const responseText = `${mailboxNextSteps(!!draftReply)} You can also say repeat to hear my last answer again.`;
       voiceStore.updateConversationState(session.sessionId, 'READY', {
         lastSpokenText: responseText,
       });
       return { responseText, endCall: false };
     }
 
-    // 14. Unknown
-    const responseText =
-      'I didn\'t catch that. You can say "draft a response", "read more", "approve", or "go back".';
+    // 14. Unknown: keep the owner in context instead of resetting to the generic menu.
+    const responseText = `I didn't catch that. ${mailboxNextSteps(!!(session.metadata?.draftReply as string | null | undefined))}`;
     voiceStore.updateConversationState(session.sessionId, 'READY', {
       lastSpokenText: responseText,
     });

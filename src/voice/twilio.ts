@@ -77,15 +77,35 @@ export function validateTwilioSignature(
 }
 
 /**
- * Generates TwiML connecting the call to Twilio ConversationRelay over WebSocket
+ * Generates TwiML connecting the call to Twilio ConversationRelay over WebSocket.
+ * With no options the output is identical to the original outbound TwiML.
+ *
+ * `parameters` become <Parameter> children, delivered to the WebSocket in the `setup`
+ * message as customParameters. They are descriptive only: the server never grants
+ * access based on them (authorization lives in the server-side session record).
  */
-export function generateConversationRelayTwiML(websocketUrl: string): string {
+export function generateConversationRelayTwiML(
+  websocketUrl: string,
+  options: { welcomeGreeting?: string; parameters?: Record<string, string> } = {}
+): string {
   const response = new twilio.twiml.VoiceResponse();
   const connect = response.connect();
-  connect.conversationRelay({
+  const relay = connect.conversationRelay({
     url: websocketUrl,
     dtmfDetection: true,
+    ...(options.welcomeGreeting ? { welcomeGreeting: options.welcomeGreeting } : {}),
   });
+  for (const [name, value] of Object.entries(options.parameters ?? {})) {
+    relay.parameter({ name, value });
+  }
+  return response.toString();
+}
+
+/** Short neutral refusal for callers who are not authorized, then hang up. */
+export function generatePrivateLineTwiML(message: string): string {
+  const response = new twilio.twiml.VoiceResponse();
+  response.say(message);
+  response.hangup();
   return response.toString();
 }
 

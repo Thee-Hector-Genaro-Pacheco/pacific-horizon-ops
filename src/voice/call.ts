@@ -110,7 +110,7 @@ export async function executeVoiceCall(actionId: string, isDryRun: boolean): Pro
     toPhone,
     fromPhone,
     conversationState: isMailbox ? 'MAILBOX_SELECTING' : 'GREETING',
-    metadata: isMailbox ? { mode: 'mailbox' } : undefined,
+    metadata: isMailbox ? { mode: 'mailbox', direction: 'outbound' } : { direction: 'outbound' },
   });
 
   console.log(`\nCreated VoiceSession: ${session.sessionId}`);

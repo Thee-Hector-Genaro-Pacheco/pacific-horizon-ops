@@ -8,8 +8,17 @@ import { defaultActionStore, type ActionStore } from '../actions/store.js';
 import { type ActionExecutor, DefaultActionExecutor } from '../actions/executor.js';
 import {
   generateConversationRelayTwiML,
+  generatePrivateLineTwiML,
   validateTwilioSignature,
 } from './twilio.js';
+import {
+  INBOUND_OWNER_WELCOME,
+  PRIVATE_LINE_MESSAGE,
+  normalizeE164,
+  ownerAuthorizerFromEnv,
+  type InboundCallerAuthorizer,
+} from './inbound.js';
+import { maskPhoneNumber } from './types.js';
 import {
   getInitialGreeting,
   handleVoiceUtterance,
@@ -44,6 +53,8 @@ export interface VoiceServerOptions {
    */
   runtime?: RuntimeSink | null;
   presenceOptions?: ReporterOptions;
+  /** Decides who may enter an inbound session. Defaults to the owner caller-ID beta from env. */
+  inboundAuthorizer?: InboundCallerAuthorizer;
 }
 
 /**
@@ -62,6 +73,18 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
   const runtimeSink =
     options.runtime === undefined ? new PacificOpsRuntimeStore({ dataDir: voiceStore.getDataDir() }) : options.runtime;
   const presence = runtimeSink ? new VoicePresenceReporter(runtimeSink, voiceStore, options.presenceOptions) : null;
+
+  /** Public WSS URL Twilio should connect ConversationRelay to for this session. */
+  function relayUrlFor(req: http.IncomingMessage, sessionId: string): string {
+    let wssBase =
+      options.publicWssUrl ||
+      process.env.PHRO_PUBLIC_WSS_URL ||
+      (process.env.PHRO_PUBLIC_BASE_URL
+        ? process.env.PHRO_PUBLIC_BASE_URL.replace(/^http/, 'ws')
+        : `ws://${req.headers.host}`);
+    wssBase = wssBase.replace(/\/$/, '');
+    return `${wssBase}/voice/ws?sessionId=${encodeURIComponent(sessionId)}`;
+  }
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -106,21 +129,66 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
           return;
         }
 
-        // Base WSS URL: use env, configured option, or derive from host
-        let wssBase =
-          options.publicWssUrl ||
-          process.env.PHRO_PUBLIC_WSS_URL ||
-          (process.env.PHRO_PUBLIC_BASE_URL
-            ? process.env.PHRO_PUBLIC_BASE_URL.replace(/^http/, 'ws')
-            : `ws://${req.headers.host}`);
-
-        // Ensure trailing slash removed
-        wssBase = wssBase.replace(/\/$/, '');
-        const websocketUrl = `${wssBase}/voice/ws?sessionId=${encodeURIComponent(sessionId)}`;
+        const websocketUrl = relayUrlFor(req, sessionId);
 
         const twimlXml = generateConversationRelayTwiML(websocketUrl);
         res.writeHead(200, { 'Content-Type': 'text/xml; charset=utf-8' });
         res.end(twimlXml);
+        return;
+      }
+
+      // POST /voice/inbound — someone called the Pacific Ops number (e.g. "Hey Siri, call Pacific Ops").
+      // Authorization is decided here, in the signed webhook, before any session exists.
+      if (req.method === 'POST' && pathname === '/voice/inbound') {
+        const body = await parseRequestBody(req);
+        const signature = req.headers['x-twilio-signature'] as string | undefined;
+        const requestUrl = (process.env.PHRO_PUBLIC_BASE_URL || `http://${req.headers.host}`) + req.url;
+
+        if (!validateTwilioSignature(signature, requestUrl, body)) {
+          console.warn('[voice:server] Rejected invalid Twilio webhook signature on /voice/inbound');
+          res.writeHead(403, { 'Content-Type': 'text/plain' });
+          res.end('Forbidden: Invalid Twilio Signature');
+          return;
+        }
+
+        const authorizer = options.inboundAuthorizer ?? ownerAuthorizerFromEnv();
+        const decision = authorizer.authorize({ from: body.From, to: body.To });
+        const maskedFrom = normalizeE164(body.From) ? maskPhoneNumber(body.From) : 'unrecognized caller';
+
+        if (!decision.authorized) {
+          console.warn(`[voice:server] Inbound call refused (${decision.reason}) from ${maskedFrom}`);
+          res.writeHead(200, { 'Content-Type': 'text/xml; charset=utf-8' });
+          res.end(generatePrivateLineTwiML(PRIVATE_LINE_MESSAGE));
+          return;
+        }
+
+        // Same session shape as an outbound mailbox call; only `direction` differs.
+        const session = voiceStore.createSession({
+          actionId: 'mailbox',
+          toPhone: normalizeE164(body.To) ?? '',
+          fromPhone: decision.identity.phoneE164,
+          conversationState: 'MAILBOX_SELECTING',
+          metadata: {
+            mode: 'mailbox',
+            direction: 'inbound',
+            callerRole: decision.identity.role,
+            callerAuthMethod: decision.identity.method,
+          },
+        });
+        voiceStore.updateSessionStatus(session.sessionId, 'CREATED', {
+          callSid: body.CallSid,
+          actor: 'twilio:inbound',
+          reason: `Inbound ${decision.identity.role} call authorized (${decision.identity.method})`,
+        });
+        console.log(`[voice:server] [session:${session.sessionId}] Inbound owner call authorized from ${maskedFrom}`);
+
+        res.writeHead(200, { 'Content-Type': 'text/xml; charset=utf-8' });
+        res.end(
+          generateConversationRelayTwiML(relayUrlFor(req, session.sessionId), {
+            welcomeGreeting: INBOUND_OWNER_WELCOME,
+            parameters: { direction: 'inbound', mode: 'mailbox', callerRole: decision.identity.role },
+          })
+        );
         return;
       }
 
@@ -240,6 +308,19 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
       return;
     }
 
+    // Inbound sessions only exist after the signed /voice/inbound webhook authorized the
+    // caller. Re-check the server-side record (never client input) and refuse reuse.
+    if (session.metadata?.direction === 'inbound') {
+      if (session.metadata?.callerRole !== 'owner') {
+        ws.close(1008, 'Unauthorized session');
+        return;
+      }
+      if (session.status === 'COMPLETED' || session.status === 'FAILED') {
+        ws.close(1008, 'Session already ended');
+        return;
+      }
+    }
+
     const isMailboxMode = session.actionId === 'mailbox' || session.metadata?.mode === 'mailbox';
     const action = isMailboxMode ? null : actionStore.getAction(session.actionId);
     if (!isMailboxMode && !action) {
@@ -273,6 +354,12 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
         // Handle Twilio ConversationRelay message types
         if (msg.type === 'setup') {
           const callSid = msg.callSid || session.callSid;
+          const claimed = (msg.customParameters ?? {}) as Record<string, unknown>;
+          const recordedDirection = (session.metadata?.direction as string | undefined) ?? 'outbound';
+          if (claimed.direction !== undefined && claimed.direction !== recordedDirection) {
+            // Custom parameters are descriptive; the session record is authoritative.
+            console.warn(`[voice:server] [session:${sessionId}] Ignoring customParameters.direction that disagrees with the session record`);
+          }
           voiceStore.updateSessionStatus(session.sessionId, 'ACTIVE', { callSid });
 
           if (isMailboxMode) {
