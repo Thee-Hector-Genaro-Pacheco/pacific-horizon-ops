@@ -35,6 +35,14 @@ export const ALLOWED_TRANSITIONS: Record<ActionStatus, readonly ActionStatus[]> 
 };
 
 /**
+ * True for statuses with no outgoing transitions (SENT, REJECTED, EXECUTION_FAILED, ...).
+ * Terminal actions are audit history: they are never reopened or reused for a new draft.
+ */
+export function isTerminalStatus(status: ActionStatus): boolean {
+  return (ALLOWED_TRANSITIONS[status] ?? []).length === 0;
+}
+
+/**
  * Returns true if transitioning from currentStatus to targetStatus is allowed.
  */
 export function canTransition(currentStatus: ActionStatus, targetStatus: ActionStatus): boolean {

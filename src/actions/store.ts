@@ -9,7 +9,7 @@ import {
   type ApprovalRecord,
   ActionRecordSchema,
 } from './types.js';
-import { assertValidTransition } from './transitions.js';
+import { assertValidTransition, isTerminalStatus } from './transitions.js';
 
 export interface ActionStoreOptions {
   dataDir?: string;
@@ -120,6 +120,22 @@ export class ActionStore {
   }
 
   /**
+   * Finds the current (non-terminal) action for a message, if any. Terminal actions
+   * (SENT, REJECTED, EXECUTION_FAILED, ...) are history and are deliberately skipped.
+   */
+  public findOpenActionByMessageAndType(
+    messageId: string,
+    actionType: ActionType
+  ): ActionRecord | undefined {
+    for (const action of this.loadActions().values()) {
+      if (action.messageId === messageId && action.actionType === actionType && !isTerminalStatus(action.status)) {
+        return action;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Gets an action by actionId
    */
   public getAction(actionId: string): ActionRecord | undefined {
@@ -140,14 +156,15 @@ export class ActionStore {
 
   /**
    * Registers a draft action resulting from live email processing.
-   * If an action for this (messageId, CREATE_EMAIL_DRAFT) already exists, returns existing action (idempotent).
+   * If an OPEN (non-terminal) action for this (messageId, CREATE_EMAIL_DRAFT) exists, returns it (idempotent).
+   * A terminal action for the same message is history: it is left untouched and a new action is created.
    * Otherwise, creates the action progressing through RECEIVED -> CLASSIFIED -> DRAFTED -> AWAITING_APPROVAL.
    */
   public createDraftAction(params: CreateDraftActionParams): {
     action: ActionRecord;
     isNew: boolean;
   } {
-    const existing = this.findActionByMessageAndType(params.messageId, 'CREATE_EMAIL_DRAFT');
+    const existing = this.findOpenActionByMessageAndType(params.messageId, 'CREATE_EMAIL_DRAFT');
     if (existing) {
       return { action: existing, isNew: false };
     }

@@ -1,4 +1,5 @@
 import { type ActionRecord } from '../actions/types.js';
+import { isTerminalStatus } from '../actions/transitions.js';
 import { type ActionStore, defaultActionStore } from '../actions/store.js';
 import { type ActionExecutor, defaultActionExecutor } from '../actions/executor.js';
 import { type VoiceSession, type VoiceConversationState, VoiceConversationStateSchema } from './types.js';
@@ -208,6 +209,7 @@ export async function handleVoiceUtterance(params: {
             selectedMessageClassification: classification,
             boundActionId: null,
             draftReply: null,
+            draftId: null,
           });
           voiceStore.updateConversationState(session.sessionId, 'READY', {
             lastSpokenText: responseText,
@@ -264,6 +266,11 @@ export async function handleVoiceUtterance(params: {
             reason: 'Action status conflict',
           });
           return { responseText, endCall: true };
+        }
+
+        const confirmCheck = checkBoundDraft(session, actionStore);
+        if (!confirmCheck.ok) {
+          return refuseIneligibleDraft(session, voiceStore, 'confirm approval', confirmCheck);
         }
 
         actionStore.approveAction(boundAction.actionId, {
@@ -365,6 +372,7 @@ export async function handleVoiceUtterance(params: {
           selectedMessageClassification: classification,
           boundActionId: null,
           draftReply: null,
+          draftId: null,
         });
         const summary = newChosen.snippet || newChosen.body.slice(0, 150).replace(/\s+/g, ' ');
         const automatedNote = classification.isAutomatedNoise
@@ -395,6 +403,7 @@ export async function handleVoiceUtterance(params: {
         selectedMessageIndex: null,
         boundActionId: null,
         draftReply: null,
+        draftId: null,
       });
       const responseText =
         'Returning to your recent emails. You can choose message one, message two, or message three.';
@@ -435,6 +444,43 @@ export async function handleVoiceUtterance(params: {
         return { responseText, endCall: false };
       }
 
+      // One open approval lifecycle per email: reuse it rather than creating a second Gmail draft.
+      // Terminal actions (SENT, REJECTED, EXECUTION_FAILED, ...) are history and never reused.
+      const sessionBound = session.metadata?.boundActionId
+        ? actionStore.getAction(session.metadata.boundActionId as string)
+        : undefined;
+      const open =
+        (sessionBound && !isTerminalStatus(sessionBound.status) ? sessionBound : undefined) ??
+        actionStore.findOpenActionByMessageAndType(selectedMessage.messageId, 'CREATE_EMAIL_DRAFT');
+      if (open) {
+        const openDraftId = open.draftId || (open.proposedAction.payload?.draftId as string | undefined);
+        const openDraftReply = open.proposedAction.payload?.draftReply as string | undefined;
+        if (open.status !== 'AWAITING_APPROVAL' || !openDraftId || typeof openDraftReply !== 'string') {
+          console.warn(`[voice:conversation] [session:${session.sessionId}] draft refused: open action ${open.actionId} is ${open.status}`);
+          const responseText =
+            'A reply to this email is already being processed, so I won\'t create another draft right now. You can say "go back" to choose another message.';
+          voiceStore.updateConversationState(session.sessionId, 'READY', {
+            lastSpokenText: responseText,
+            reason: `Draft refused: open action ${open.actionId} is ${open.status}`,
+          });
+          return { responseText, endCall: false };
+        }
+        voiceStore.updateSessionActionId(session.sessionId, open.actionId, {
+          ...session.metadata,
+          mode: 'mailbox',
+          selectedMessage,
+          boundActionId: open.actionId,
+          draftReply: openDraftReply,
+          draftId: openDraftId,
+        });
+        const responseText = `A draft reply is already waiting for your approval: "${openDraftReply}". ${mailboxNextSteps(true)}`;
+        voiceStore.updateConversationState(session.sessionId, 'READY', {
+          lastSpokenText: responseText,
+          reason: `Bound existing open draft action ${open.actionId}`,
+        });
+        return { responseText, endCall: false };
+      }
+
       const draftText = generateDraftReply(selectedMessage);
       let draftId = `draft_${Date.now()}`;
       let messageId = selectedMessage.messageId;
@@ -466,7 +512,7 @@ export async function handleVoiceUtterance(params: {
         draftId = await createReplyDraft(auth, emailMsg, draftText);
       }
 
-      const { action: createdAction } = actionStore.createDraftAction({
+      const { action: createdAction, isNew } = actionStore.createDraftAction({
         messageId,
         threadId,
         draftId,
@@ -476,6 +522,28 @@ export async function handleVoiceUtterance(params: {
         confidence: 1.0,
         draftReply: draftText,
       });
+
+      // Fail closed unless the new Gmail draft is paired with a fresh, approvable action.
+      if (!isNew || createdAction.status !== 'AWAITING_APPROVAL' || createdAction.draftId !== draftId) {
+        console.error(
+          `[voice:conversation] [session:${session.sessionId}] new draft ${draftId} not bound: action ${createdAction.actionId} (${createdAction.status}, isNew=${isNew}, draftId=${createdAction.draftId})`
+        );
+        voiceStore.updateSessionActionId(session.sessionId, 'mailbox', {
+          ...session.metadata,
+          mode: 'mailbox',
+          selectedMessage,
+          boundActionId: null,
+          draftReply: null,
+          draftId: null,
+        });
+        const responseText =
+          "A Gmail draft was saved, but I couldn't register it for approval, so it can't be sent from this call. Please review it in Gmail.";
+        voiceStore.updateConversationState(session.sessionId, 'READY', {
+          lastSpokenText: responseText,
+          reason: `Draft ${draftId} could not be bound to an approvable action`,
+        });
+        return { responseText, endCall: false };
+      }
 
       voiceStore.updateSessionActionId(session.sessionId, createdAction.actionId, {
         ...session.metadata,
@@ -554,16 +622,15 @@ export async function handleVoiceUtterance(params: {
 
     // 10. "approve"
     if (norm === 'approve' || norm === 'approve it' || norm === 'approve draft' || norm === 'i approve') {
-      const boundActionId = (session.metadata?.boundActionId as string) || (session.actionId !== 'mailbox' ? session.actionId : null);
-      const boundAction = boundActionId ? actionStore.getAction(boundActionId) : null;
-
-      if (!boundAction || boundAction.status !== 'AWAITING_APPROVAL') {
-        const responseText =
-          'No draft has been created for this email yet. Please say "draft a response" first.';
-        voiceStore.updateConversationState(session.sessionId, 'READY', {
-          lastSpokenText: responseText,
-        });
-        return { responseText, endCall: false };
+      const check = checkBoundDraft(session, actionStore);
+      if (!check.ok) {
+        return refuseIneligibleDraft(
+          session,
+          voiceStore,
+          'approve',
+          check,
+          'No draft has been created for this email yet. Please say "draft a response" first.'
+        );
       }
 
       const responseText = `Are you sure you want to approve sending this draft to ${selectedMessage.senderName}? Please say "confirm approval" to send.`;
@@ -586,16 +653,15 @@ export async function handleVoiceUtterance(params: {
 
     // 12. "reject"
     if (norm === 'reject' || norm === 'reject it' || norm === 'decline') {
-      const boundActionId = (session.metadata?.boundActionId as string) || (session.actionId !== 'mailbox' ? session.actionId : null);
-      const boundAction = boundActionId ? actionStore.getAction(boundActionId) : null;
-
-      if (!boundAction || boundAction.status !== 'AWAITING_APPROVAL') {
-        const responseText =
-          'No draft has been created for this email yet. You can say "go back" to select another message.';
-        voiceStore.updateConversationState(session.sessionId, 'READY', {
-          lastSpokenText: responseText,
-        });
-        return { responseText, endCall: false };
+      const check = checkBoundDraft(session, actionStore);
+      if (!check.ok) {
+        return refuseIneligibleDraft(
+          session,
+          voiceStore,
+          'reject',
+          check,
+          'No draft has been created for this email yet. You can say "go back" to select another message.'
+        );
       }
 
       const responseText =
@@ -848,6 +914,61 @@ export async function handleVoiceUtterance(params: {
       return { responseText, endCall: false };
     }
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Mailbox draft/approval eligibility                                   */
+/* ------------------------------------------------------------------ */
+
+export type BoundDraftCheck =
+  | { ok: true; action: ActionRecord }
+  | {
+      ok: false;
+      reason: 'no_draft' | 'action_missing' | 'action_not_approvable' | 'draft_mismatch';
+      actionId?: string;
+      status?: string;
+    };
+
+/**
+ * Verifies that the session's bound action, its Gmail draft and the session's draft
+ * all belong to one current approval lifecycle. Anything else fails closed.
+ */
+export function checkBoundDraft(session: VoiceSession, actionStore: ActionStore): BoundDraftCheck {
+  const boundActionId =
+    (session.metadata?.boundActionId as string | null | undefined) || (session.actionId !== 'mailbox' ? session.actionId : null);
+  if (!boundActionId) return { ok: false, reason: 'no_draft' };
+  const action = actionStore.getAction(boundActionId);
+  if (!action) return { ok: false, reason: 'action_missing', actionId: boundActionId };
+  if (action.status !== 'AWAITING_APPROVAL') {
+    return { ok: false, reason: 'action_not_approvable', actionId: action.actionId, status: action.status };
+  }
+  const sessionDraftId = session.metadata?.draftId as string | null | undefined;
+  const actionDraftId = action.draftId || (action.proposedAction.payload?.draftId as string | undefined);
+  if (sessionDraftId && sessionDraftId !== actionDraftId) {
+    return { ok: false, reason: 'draft_mismatch', actionId: action.actionId, status: action.status };
+  }
+  return { ok: true, action };
+}
+
+/** Spoken when the bound draft exists but its approval record is stale, missing or mismatched. */
+export const STALE_DRAFT_TEXT =
+  'This draft can no longer be approved from this call. Say "draft a response" to prepare a fresh draft.';
+
+function refuseIneligibleDraft(
+  session: VoiceSession,
+  voiceStore: VoiceStore,
+  command: string,
+  check: Extract<BoundDraftCheck, { ok: false }>,
+  noDraftText = 'No draft has been created for this email yet. Please say "draft a response" first.'
+): ConversationTurnResult {
+  const detail = `${check.reason}${check.actionId ? ` (action ${check.actionId}${check.status ? `, ${check.status}` : ''})` : ''}`;
+  console.warn(`[voice:conversation] [session:${session.sessionId}] ${command} refused: ${detail}`);
+  const responseText = check.reason === 'no_draft' ? noDraftText : STALE_DRAFT_TEXT;
+  voiceStore.updateConversationState(session.sessionId, 'READY', {
+    lastSpokenText: responseText,
+    reason: `${command} refused: ${detail}`,
+  });
+  return { responseText, endCall: false };
 }
 
 /* ------------------------------------------------------------------ */
