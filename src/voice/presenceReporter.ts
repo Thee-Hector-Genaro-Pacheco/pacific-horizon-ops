@@ -46,6 +46,7 @@ const TASK_BY_CONVERSATION: Record<VoiceConversationState, { task: string; opera
   AWAITING_APPROVAL_CONFIRMATION: { task: 'Awaiting approval confirmation', operation: 'approval' },
   AWAITING_REJECTION_CONFIRMATION: { task: 'Awaiting rejection confirmation', operation: 'approval' },
   PHOTO_BOOTH_ANALYTICS: { task: 'Photo Booth analytics', operation: 'photo_booth_analytics' },
+  CALENDAR: { task: 'Checking calendar', operation: 'calendar_read' },
   COMPLETE: { task: 'Wrapping up', operation: 'wrap_up' },
 };
 

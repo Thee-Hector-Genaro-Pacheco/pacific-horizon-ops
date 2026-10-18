@@ -445,6 +445,63 @@ Start the stack exactly as for inbound calling (`npm run voice:serve`, plus your
 
 ---
 
+## Google Calendar, Read-Only (PHRO-CAL-001)
+
+Pacific Ops can read the business Google Calendar: schedules, next event, and availability. It cannot create, change, delete, accept, decline or move anything; the code has no Calendar write call and requests no write scope.
+
+### Authorization (one time)
+
+Calendar reuses the existing business Google OAuth client (`credentials.business.json` / `credentials.json`) and token (`token.business.json`). `src/auth.ts` adds `https://www.googleapis.com/auth/calendar.readonly` to `SCOPES`; that single read scope covers `events.list`, `events.get` and `freebusy.query`.
+
+Existing tokens keep working for Gmail but lack Calendar access, so every Calendar read fails closed with "I don't have permission to read your calendar yet." until you re-consent:
+
+1. In Google Cloud Console for the same project, enable the **Google Calendar API** (APIs & Services → Library).
+2. Optionally add `.../auth/calendar.readonly` to the OAuth consent screen's scopes.
+3. Run `npm run calendar:auth` and sign in with the business account, leaving every permission checked.
+
+`calendar:auth` backs up the current token to `token.business.PRE_CALENDAR_<timestamp>.json` (gitignored) and only replaces it after verifying the account (`PHRO_GMAIL_BUSINESS_ACCOUNT`) and that **all** Gmail scopes plus `calendar.readonly` were granted. A partial consent leaves the old token untouched.
+
+### Configuration
+
+```env
+PHRO_TIMEZONE=America/Los_Angeles   # IANA zone for every local-time interpretation (default shown)
+PHRO_CALENDAR_ID=primary            # calendar to read (default primary)
+PHRO_CALENDAR_TIMEOUT_MS=10000      # optional
+```
+
+An invalid timezone fails closed. Nothing depends on the machine's local timezone.
+
+### CLI
+
+```bash
+npm run calendar:today
+npm run calendar:upcoming -- 7
+npm run calendar:next
+npm run calendar:availability -- "Saturday from 5 to 10"
+npm run calendar:availability -- 2026-10-24T17:00 2026-10-24T22:00   # local times in PHRO_TIMEZONE
+```
+
+### Semantics
+
+- Events: `singleEvents=true` (recurring series expanded into occurrences), `showDeleted=false`, cancelled events dropped, paginated. All-day events use local dates in `PHRO_TIMEZONE`. Events crossing midnight appear on both days.
+- Availability uses Google FreeBusy, which already treats "Show as: Free" (transparent) events as free and all-day busy events as busy. Overlapping busy blocks are merged; a block that only touches the window edge is not a conflict.
+- Phrases: `today`/`tomorrow` = that local day 00:00–24:00; `<weekday>` = next occurrence on or after today; `next <weekday>` = that weekday in the following Mon–Sun week; `this weekend` = Saturday 00:00 to Monday 00:00 of the current week (the weekend in progress on Sat/Sun); `next weekend` = this weekend + 7 days; morning/afternoon/evening/night = 06–12/12–17/17–21/17–24. Hours without am/pm: 1–7 = PM, 8–11 = AM, 12 = noon; an end time is the first reading after the start ("5 to 10" = 5–10 PM, "9 to 5" = 9 AM–5 PM).
+- "When am I free <day>" lists open gaps of 30+ minutes between 8 AM and 10 PM.
+- "Photo booth bookings" are events whose title mentions booth/booking.
+
+### Voice
+
+Calendar is a separate `CALENDAR` conversation state alongside the mailbox and `PHOTO_BOOTH_ANALYTICS`. Questions with Calendar words (schedule, calendar, available, free, busy, booking, next event, what do I have…) route here; analytics vocabulary (perform, downloads, Instagram, feedback…) keeps a booth question in analytics, so "Do I have a photo booth booking Saturday?" is Calendar and "How did the latest photo booth event perform?" is analytics.
+
+- Follow-ups ("What time is the second one?", "Am I free after that?") use a minimal session context: the last window and up to 10 events' title/start/end/all-day. No IDs or raw Google payloads.
+- "Repeat" replays the last answer without calling Google. "Go back to my inbox" restores the mailbox state; switching between Calendar and analytics keeps the mailbox resume point.
+- A pending "confirm approval"/"confirm rejection" is never interrupted, and approve/draft/message commands are refused inside Calendar.
+- Failures are spoken as failures ("I can't authenticate with Google Calendar right now", "Google Calendar isn't responding right now", "I couldn't safely interpret the calendar response"), never as free time.
+- Spoken answers use titles and clock times only. Titles have emails, URLs and phone numbers removed; private events are "Private event". Attendees, organizers, descriptions, locations and links never leave the service layer.
+- Runtime: thinking → "One moment, checking your calendar." → thinking → answer, task "Checking calendar", operation `calendar_read`.
+
+---
+
 ## Acceptance Criteria & Testing Verification
 
 1. **Authentication**: First run opens Google consent and creates `token.json`.

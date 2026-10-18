@@ -32,6 +32,7 @@ import { getAuthenticatedClient, getExpectedAccount } from '../auth.js';
 import { PacificOpsRuntimeStore, estimatePlaybackMs } from '../runtime/pacificOpsRuntime.js';
 import { VoicePresenceReporter, observeExecutor, type ReporterOptions, type RuntimeSink } from './presenceReporter.js';
 import type { PhotoBoothVoiceDeps } from './analytics.js';
+import type { CalendarVoiceDeps } from './calendar.js';
 
 export interface VoiceServerOptions {
   port?: number;
@@ -58,6 +59,8 @@ export interface VoiceServerOptions {
   inboundAuthorizer?: InboundCallerAuthorizer;
   /** Read-only Photo Booth analytics dependencies. Defaults to env-configured clients. */
   photoBooth?: PhotoBoothVoiceDeps;
+  /** Read-only Google Calendar dependencies. Defaults to the business Google account. */
+  calendar?: CalendarVoiceDeps;
 }
 
 /**
@@ -453,6 +456,7 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
             executor: sessionExecutor,
             draftCreator: options.draftCreator,
             photoBooth: options.photoBooth,
+            calendar: options.calendar,
             onProgress: (progressText, progressOpts) => {
               console.log(`[voice:server] [session:${sessionId}] Spoken progress: "${progressText}"`);
               voiceStore.appendTranscript(session.sessionId, {

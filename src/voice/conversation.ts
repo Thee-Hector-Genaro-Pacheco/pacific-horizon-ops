@@ -20,12 +20,20 @@ import {
   PHOTO_BOOTH_VOICE_HELP,
   askPhotoBoothForVoice,
   isMailboxActionCommand,
-  isPhotoBoothAnalyticsRequest,
   isReturnToInboxRequest,
   normalizeUtterance,
   type PhotoBoothVoiceContext,
   type PhotoBoothVoiceDeps,
 } from './analytics.js';
+import {
+  CALENDAR_MAILBOX_COMMAND_GUIDANCE,
+  CALENDAR_PROGRESS_TEXT,
+  CALENDAR_VOICE_HELP,
+  answerCalendarQuestion,
+  routeReadDomain,
+  type CalendarVoiceContext,
+  type CalendarVoiceDeps,
+} from './calendar.js';
 
 export interface ConversationTurnResult {
   responseText: string;
@@ -134,6 +142,8 @@ export async function handleVoiceUtterance(params: {
   onProgress?: (text: string, opts?: { stillWorking?: boolean }) => void;
   /** Read-only Photo Booth analytics dependencies (mocked in tests). */
   photoBooth?: PhotoBoothVoiceDeps;
+  /** Read-only Google Calendar dependencies (mocked in tests). */
+  calendar?: CalendarVoiceDeps;
   draftCreator?: (params: {
     to: string;
     subject: string;
@@ -152,13 +162,24 @@ export async function handleVoiceUtterance(params: {
     timestamp: new Date().toISOString(),
   });
 
-  // Photo Booth analytics is a separate read-only domain. It is never entered from a
-  // pending approval/rejection confirmation, so the two-step confirmation stays strict.
-  if (session.conversationState === 'PHOTO_BOOTH_ANALYTICS') {
-    return handlePhotoBoothDomainTurn({ session, utterance, voiceStore, actionStore, onProgress: params.onProgress, deps: params.photoBooth });
+  // Photo Booth analytics and Calendar are separate read-only domains. Neither is ever
+  // entered from a pending approval/rejection confirmation, so two-step confirmation stays strict.
+  const domain: DomainTurnArgs = {
+    session,
+    utterance,
+    voiceStore,
+    actionStore,
+    onProgress: params.onProgress,
+    photoBooth: params.photoBooth,
+    calendar: params.calendar,
+  };
+  if (session.conversationState === 'PHOTO_BOOTH_ANALYTICS' || session.conversationState === 'CALENDAR') {
+    return handleReadDomainTurn(domain);
   }
-  if (!ANALYTICS_BLOCKED_STATES.has(session.conversationState) && isPhotoBoothAnalyticsRequest(normalizeUtterance(utterance))) {
-    return askPhotoBooth({ session, utterance, voiceStore, onProgress: params.onProgress, deps: params.photoBooth });
+  if (!ANALYTICS_BLOCKED_STATES.has(session.conversationState)) {
+    const route = routeReadDomain(normalizeUtterance(utterance));
+    if (route === 'calendar') return askCalendar(domain);
+    if (route === 'photo_booth') return askPhotoBooth(domain);
   }
 
   const isMailboxMode =
@@ -990,32 +1011,40 @@ function photoBoothContext(session: VoiceSession): PhotoBoothVoiceContext | null
   return ctx && typeof ctx === 'object' ? ctx : null;
 }
 
+/** Read-only domains Pacific Ops can switch between without losing mailbox state. */
+const READ_DOMAIN_STATES = new Set<VoiceConversationState>(['PHOTO_BOOTH_ANALYTICS', 'CALENDAR']);
+
+interface DomainTurnArgs {
+  session: VoiceSession;
+  utterance: string;
+  voiceStore: VoiceStore;
+  actionStore: ActionStore;
+  onProgress?: (text: string, opts?: { stillWorking?: boolean }) => void;
+  photoBooth?: PhotoBoothVoiceDeps;
+  calendar?: CalendarVoiceDeps;
+}
+
+/** Enter (or stay in) a read domain. The mailbox resume point is saved only when leaving the mailbox. */
+function enterReadDomain(session: VoiceSession, voiceStore: VoiceStore, state: VoiceConversationState, reason: string): void {
+  if (!READ_DOMAIN_STATES.has(session.conversationState)) {
+    // Mailbox metadata (messages, selection, bound draft) is left untouched.
+    voiceStore.updateSessionMetadata(session.sessionId, { resumeConversationState: session.conversationState });
+  }
+  voiceStore.updateConversationState(session.sessionId, state, { reason });
+}
+
 /**
  * Answers one analytics question through the existing Photo Booth agent. Touches only
  * the voice session: no action store, executor, draft creator or Gmail access.
  */
-async function askPhotoBooth(args: {
-  session: VoiceSession;
-  utterance: string;
-  voiceStore: VoiceStore;
-  onProgress?: (text: string, opts?: { stillWorking?: boolean }) => void;
-  deps?: PhotoBoothVoiceDeps;
-}): Promise<ConversationTurnResult> {
+async function askPhotoBooth(args: DomainTurnArgs): Promise<ConversationTurnResult> {
   const { session, utterance, voiceStore } = args;
   const entering = session.conversationState !== 'PHOTO_BOOTH_ANALYTICS';
-
-  if (entering) {
-    // Remember where the owner was so "go back to my inbox" can restore it. Mailbox
-    // metadata (messages, selection, bound draft) is left untouched.
-    voiceStore.updateSessionMetadata(session.sessionId, { resumeConversationState: session.conversationState });
-  }
-  voiceStore.updateConversationState(session.sessionId, 'PHOTO_BOOTH_ANALYTICS', {
-    reason: entering ? 'Switched to Photo Booth analytics' : 'Photo Booth analytics follow-up',
-  });
+  enterReadDomain(session, voiceStore, 'PHOTO_BOOTH_ANALYTICS', entering ? 'Switched to Photo Booth analytics' : 'Photo Booth analytics follow-up');
   args.onProgress?.(PHOTO_BOOTH_PROGRESS_TEXT, { stillWorking: true });
 
   const previous = photoBoothContext(session);
-  const result = await askPhotoBoothForVoice(utterance, previous, args.deps);
+  const result = await askPhotoBoothForVoice(utterance, previous, args.photoBooth);
 
   if (result.ok) {
     const context: PhotoBoothVoiceContext = {
@@ -1034,18 +1063,40 @@ async function askPhotoBooth(args: {
   return { responseText: result.text, endCall: false };
 }
 
-async function handlePhotoBoothDomainTurn(args: {
-  session: VoiceSession;
-  utterance: string;
-  voiceStore: VoiceStore;
-  actionStore: ActionStore;
-  onProgress?: (text: string, opts?: { stillWorking?: boolean }) => void;
-  deps?: PhotoBoothVoiceDeps;
-}): Promise<ConversationTurnResult> {
+/**
+ * Answers one Calendar question through the read-only CalendarService. Touches only the
+ * voice session: no action store, executor, draft creator or Gmail access.
+ */
+async function askCalendar(args: DomainTurnArgs): Promise<ConversationTurnResult> {
+  const { session, utterance, voiceStore } = args;
+  const entering = session.conversationState !== 'CALENDAR';
+  enterReadDomain(session, voiceStore, 'CALENDAR', entering ? 'Switched to Calendar' : 'Calendar follow-up');
+  args.onProgress?.(CALENDAR_PROGRESS_TEXT, { stillWorking: true });
+
+  const previous = calendarContext(session);
+  const result = await answerCalendarQuestion(utterance, previous, args.calendar);
+  if (result.ok && result.context) {
+    voiceStore.updateSessionMetadata(session.sessionId, { calendar: result.context });
+  }
+  const audit = `Calendar ${result.outcome} (reads: ${result.calls.join(', ') || 'none'})`;
+  console.log(`[voice:calendar] [session:${session.sessionId}] ${audit}`);
+  voiceStore.updateConversationState(session.sessionId, 'CALENDAR', { lastSpokenText: result.text, reason: audit });
+  return { responseText: result.text, endCall: false };
+}
+
+function calendarContext(session: VoiceSession): CalendarVoiceContext | null {
+  const ctx = session.metadata?.calendar as CalendarVoiceContext | null | undefined;
+  return ctx && typeof ctx === 'object' ? ctx : null;
+}
+
+/** One turn inside a read domain: shared controls first, then switch or follow up. */
+async function handleReadDomainTurn(args: DomainTurnArgs): Promise<ConversationTurnResult> {
   const { session, voiceStore } = args;
+  const current = session.conversationState;
+  const isCalendar = current === 'CALENDAR';
   const norm = normalizeUtterance(args.utterance);
   const stay = (responseText: string, reason?: string): ConversationTurnResult => {
-    voiceStore.updateConversationState(session.sessionId, 'PHOTO_BOOTH_ANALYTICS', { lastSpokenText: responseText, reason });
+    voiceStore.updateConversationState(session.sessionId, current, { lastSpokenText: responseText, reason });
     return { responseText, endCall: false };
   };
 
@@ -1055,32 +1106,37 @@ async function handlePhotoBoothDomainTurn(args: {
     return { responseText, endCall: true };
   }
 
-  // Repeat replays the stored spoken answer; it never re-queries analytics.
+  // Repeat replays the stored spoken answer; it never re-queries analytics or Calendar.
   if (isRepeatRequest(norm) && session.lastSpokenText) {
     return stay(session.lastSpokenText, 'Repeated last response at owner request');
   }
 
   if (isReturnToInboxRequest(norm)) {
-    return returnFromPhotoBooth(session, voiceStore, args.actionStore);
+    return returnToMailbox(session, voiceStore, args.actionStore, isCalendar ? 'Calendar' : 'Photo Booth analytics');
   }
 
   if (norm === 'help' || norm.includes('options') || norm.includes('what can i say')) {
-    return stay(PHOTO_BOOTH_VOICE_HELP);
+    return stay(isCalendar ? CALENDAR_VOICE_HELP : PHOTO_BOOTH_VOICE_HELP);
   }
 
   if (isMailboxActionCommand(norm)) {
-    return stay(PHOTO_BOOTH_MAILBOX_COMMAND_GUIDANCE, 'Mailbox command refused while in Photo Booth analytics');
+    return stay(
+      isCalendar ? CALENDAR_MAILBOX_COMMAND_GUIDANCE : PHOTO_BOOTH_MAILBOX_COMMAND_GUIDANCE,
+      `Mailbox command refused while in ${isCalendar ? 'Calendar' : 'Photo Booth analytics'}`
+    );
   }
 
-  // Anything else is a follow-up question about the current analytics context.
-  return askPhotoBooth({ session, utterance: args.utterance, voiceStore, onProgress: args.onProgress, deps: args.deps });
+  // Explicit questions for the other read domain switch; anything else is a follow-up here.
+  const route = routeReadDomain(norm);
+  if (isCalendar) return route === 'photo_booth' ? askPhotoBooth(args) : askCalendar(args);
+  return route === 'calendar' ? askCalendar(args) : askPhotoBooth(args);
 }
 
-function returnFromPhotoBooth(session: VoiceSession, voiceStore: VoiceStore, actionStore: ActionStore): ConversationTurnResult {
+function returnToMailbox(session: VoiceSession, voiceStore: VoiceStore, actionStore: ActionStore, from: string): ConversationTurnResult {
   const mailbox = isSessionMailbox(session);
   const selected = session.metadata?.selectedMessage as EligibleInboxMessage | null | undefined;
   const saved = VoiceConversationStateSchema.safeParse(session.metadata?.resumeConversationState);
-  const savedUsable = saved.success && !ANALYTICS_BLOCKED_STATES.has(saved.data) && saved.data !== 'PHOTO_BOOTH_ANALYTICS';
+  const savedUsable = saved.success && !ANALYTICS_BLOCKED_STATES.has(saved.data) && !READ_DOMAIN_STATES.has(saved.data);
   // A mailbox session with no selected message is always back at message selection.
   const resume: VoiceConversationState =
     mailbox && !selected ? 'MAILBOX_SELECTING' : savedUsable ? saved.data : 'READY';
@@ -1101,7 +1157,7 @@ function returnFromPhotoBooth(session: VoiceSession, voiceStore: VoiceStore, act
   voiceStore.updateSessionMetadata(session.sessionId, { resumeConversationState: null });
   voiceStore.updateConversationState(session.sessionId, resume, {
     lastSpokenText: responseText,
-    reason: 'Returned from Photo Booth analytics',
+    reason: `Returned from ${from}`,
   });
   return { responseText, endCall: false };
 }

@@ -135,13 +135,23 @@ export function resolveTokenPath(profileInput?: string, baseDir: string = proces
   };
 }
 
+/** Read-only Calendar access. Covers events.list, events.get and freebusy.query; grants no writes. */
+export const CALENDAR_READONLY_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
+
 export const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.compose',
   'https://www.googleapis.com/auth/gmail.modify',
+  CALENDAR_READONLY_SCOPE,
 ];
 
 export const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
+
+/** Scopes from `required` that a granted scope string (space-delimited) does not include. */
+export function missingScopes(grantedScope: string | null | undefined, required: readonly string[] = SCOPES): string[] {
+  const granted = new Set((grantedScope ?? '').split(/\s+/).filter(Boolean));
+  return required.filter((s) => !granted.has(s));
+}
 
 /**
  * Checks if the authenticated OAuth2Client has been granted a specific scope.
@@ -151,6 +161,20 @@ export function hasScope(auth: OAuth2Client, requiredScope: string): boolean {
   if (!granted) return false;
   const scopes = granted.split(' ');
   return scopes.includes(requiredScope);
+}
+
+/**
+ * Google's consent screen lets the owner untick individual scopes. Throws (before any
+ * token is written) if a new consent would silently lose Gmail access or lack Calendar read.
+ */
+export function assertConsentGrantedAllScopes(grantedScope: string | null | undefined, targetTokenPath: string): void {
+  const notGranted = missingScopes(grantedScope);
+  if (notGranted.length > 0) {
+    throw new Error(
+      `Consent did not grant all required scopes (missing: ${notGranted.join(', ')}). ` +
+        `${path.basename(targetTokenPath)} was left unchanged. Re-run the authorization and keep every permission checked.`
+    );
+  }
 }
 
 interface CredentialsFile {
@@ -357,6 +381,8 @@ export async function authenticateViaLoopback(
               `[auth] Note: Expected-account enforcement is not configured for profile "${profile}". Set PHRO_GMAIL_${profile.toUpperCase()}_ACCOUNT in .env to enforce.`
             );
           }
+
+          assertConsentGrantedAllScopes(tokens.scope, targetTokenPath);
 
           if (onValidated) {
             onValidated();
