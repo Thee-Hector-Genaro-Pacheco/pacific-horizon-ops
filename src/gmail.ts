@@ -1,3 +1,8 @@
+import {
+  decodeRfc2047,
+  encodeRecipientHeader,
+  encodeSubjectHeader,
+} from "./mime.js";
 import fs from 'node:fs';
 import path from 'node:path';
 import { google, type gmail_v1 } from 'googleapis';
@@ -169,7 +174,7 @@ export async function fetchRecentInboxMessages(
     const headers = latestMsg.payload?.headers || [];
     const getHeader = (name: string): string => {
       const match = headers.find((h) => h.name?.toLowerCase() === name.toLowerCase());
-      return match?.value || '';
+      return match?.value ? decodeRfc2047(match.value) : '';
     };
 
     const from = getHeader('from');
@@ -221,11 +226,11 @@ export async function createReplyDraft(
 
   // Construct RFC 2822 message headers and body
   const lines: string[] = [
-    `To: ${email.from}`,
-    `Subject: ${normalizedSubject}`,
+    `To: ${encodeRecipientHeader(email.from)}`,
+    `Subject: ${encodeSubjectHeader(normalizedSubject)}`,
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: 7bit',
+    'Content-Transfer-Encoding: 8bit',
   ];
 
   if (inReplyTo) {
@@ -275,11 +280,11 @@ export async function createDraft(
   const gmail = google.gmail({ version: 'v1', auth });
 
   const lines: string[] = [
-    `To: ${params.to}`,
-    `Subject: ${params.subject}`,
+    `To: ${encodeRecipientHeader(params.to)}`,
+    `Subject: ${encodeSubjectHeader(params.subject)}`,
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: 7bit',
+    'Content-Transfer-Encoding: 8bit',
     '',
     params.bodyText,
   ];
@@ -342,7 +347,7 @@ export async function getReplyDraft(
     const headers = msg.payload?.headers || [];
     const getHeader = (name: string): string => {
       const h = headers.find((header) => header.name?.toLowerCase() === name.toLowerCase());
-      return h?.value || '';
+      return h?.value ? decodeRfc2047(h.value) : '';
     };
 
     const to = getHeader('to');
@@ -417,8 +422,10 @@ export async function findSentMessageInThread(
       const labels = msg.labelIds || [];
       if (labels.includes('SENT')) {
         const headers = msg.payload?.headers || [];
-        const to = headers.find((h) => h.name?.toLowerCase() === 'to')?.value || '';
-        const subject = headers.find((h) => h.name?.toLowerCase() === 'subject')?.value || '';
+        const toRaw = headers.find((h) => h.name?.toLowerCase() === 'to')?.value || '';
+        const to = decodeRfc2047(toRaw);
+        const subjectRaw = headers.find((h) => h.name?.toLowerCase() === 'subject')?.value || '';
+        const subject = decodeRfc2047(subjectRaw);
 
         const normOptionsTo = options.to.toLowerCase();
         const normTo = to.toLowerCase();
@@ -435,3 +442,5 @@ export async function findSentMessageInThread(
     return null;
   }
 }
+
+export { decodeRfc2047, encodeRecipientHeader, encodeSubjectHeader } from "./mime.js";

@@ -1,3 +1,4 @@
+import { decodeRfc2047 } from "../mime.js";
 import type { OAuth2Client } from 'google-auth-library';
 import { type ActionStore, defaultActionStore } from './store.js';
 import { getAuthenticatedClient } from '../auth.js';
@@ -33,12 +34,22 @@ function extractEmail(raw: string): string {
   return (match ? match[1] : raw).trim().toLowerCase();
 }
 
-function normalizeSubject(s: string): string {
-  return s.trim().toLowerCase().replace(/^re:\s*/i, '');
+export function normalizeSubject(s: string): string {
+  const decoded = decodeRfc2047(s);
+  return decoded
+    .normalize("NFC")
+    .trim()
+    .toLowerCase()
+    .replace(/^re:\s*/i, "")
+    .normalize("NFC");
 }
 
-function normalizeBody(b: string): string {
-  return b.trim().replace(/\r\n/g, '\n').replace(/\s+/g, ' ');
+export function normalizeBody(b: string): string {
+  return b
+    .normalize("NFC")
+    .trim()
+    .replace(/\r\n/g, "\n")
+    .replace(/\s+/g, " ");
 }
 
 export interface GmailSendAdapter {
@@ -189,8 +200,26 @@ export class DefaultActionExecutor implements ActionExecutor {
     }
 
     // Subject check
-    const expectedSubject = normalizeSubject(action.subject);
-    const actualSubject = normalizeSubject(liveDraft.subject);
+    let expectedSubject: string;
+    let actualSubject: string;
+    try {
+      expectedSubject = normalizeSubject(action.subject);
+      actualSubject = normalizeSubject(liveDraft.subject);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const reason = `Draft subject verification failed: ${msg}. Send aborted for safety.`;
+      actionStore.transitionAction(action.actionId, 'EXECUTION_FAILED', {
+        actor,
+        failureReason: reason,
+        reason: 'Draft modified: subject mismatch',
+      });
+      return {
+        success: false,
+        status: 'BLOCKED_MODIFIED',
+        error: reason,
+      };
+    }
+
     if (expectedSubject !== actualSubject) {
       const reason = `Draft subject changed in Gmail (expected: ${expectedSubject}, found: ${actualSubject}). Send aborted for safety.`;
       actionStore.transitionAction(action.actionId, 'EXECUTION_FAILED', {
