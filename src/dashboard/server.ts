@@ -17,7 +17,8 @@ import { createEmbeddingProvider, type EmbeddingProvider } from '../knowledge/em
 import { migrate } from '../knowledge/migrations.js';
 import { retrieveKnowledge } from '../knowledge/retrieval.js';
 import { knowledgeStatus } from '../knowledge/status.js';
-import type { KnowledgeSearchDTO, KnowledgeStatusDTO } from './types.js';
+import type { AgentTraceDTO, KnowledgeSearchDTO, KnowledgeStatusDTO } from './types.js';
+import { readTraces } from '../agent/trace.js';
 import type { CalendarHubView } from './types.js';
 
 // The DTO is the wire shape of the resolved runtime; keep them structurally identical.
@@ -425,6 +426,35 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
         return send(res, 200, m.analytics);
       case 'knowledge':
         return handleKnowledge(id, url, res);
+      case 'agent': {
+        if (id !== 'traces') return notFound(res);
+        const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 50, 1), 200);
+        // Traces are redacted when written; only display fields are returned (no session/request IDs).
+        const traces: AgentTraceDTO[] = readTraces(dataDir, limit).map((t) => ({
+          traceId: t.traceId,
+          at: t.at,
+          channel: t.channel,
+          inputPreview: t.inputPreview,
+          // Only knowledge rewrites carry a canonical preview; mutation text is never rewritten.
+          normalization:
+            t.normalization && t.intent.intent === 'knowledge.query'
+              ? { changed: t.normalization.changed, confidence: t.normalization.confidence, method: t.normalization.method, canonicalPreview: t.normalization.canonicalPreview }
+              : null,
+          followUp: t.followUp ?? null,
+          resolution: t.resolution ?? null,
+          intent: t.intent,
+          plan: t.plan,
+          providersInvoked: t.providersInvoked,
+          toolsConsidered: t.toolsConsidered,
+          policy: t.policy,
+          approvalRequired: t.approvalRequired,
+          toolOutcome: t.toolOutcome,
+          latencyMs: t.latencyMs,
+          status: t.status,
+          dryRun: t.dryRun,
+        }));
+        return send(res, 200, traces);
+      }
       case 'calendar': {
         const viewParam = url.searchParams.get('view') ?? 'today';
         if (!['month', 'week', 'day', 'upcoming', 'today'].includes(viewParam)) return badRequest(res, 'view must be month, week, day, upcoming or today');

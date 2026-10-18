@@ -65,7 +65,10 @@ export interface ContextContribution {
 }
 
 export interface ContextProvider {
+  /** Stable provider ID, e.g. "knowledge", "calendar". */
   name: string;
+  /** What the provider reads, e.g. ["knowledge.read"]. Informational; policy lives in the agent harness. */
+  capabilities?: string[];
   collect(req: ContextRequest): Promise<ContextContribution>;
 }
 
@@ -105,6 +108,37 @@ export async function assembleContext(req: ContextRequest, providers: ContextPro
     constraints: [...DEFAULT_CONSTRAINTS],
     notices,
   };
+}
+
+/** The parts of an agent ContextPlan the assembler needs (kept structural to avoid a dependency cycle). */
+export interface AssemblyPlan {
+  providers: string[];
+  requiredCompleteness: 'all_sources' | 'best_effort';
+}
+
+/**
+ * Plan-driven assembly: only the planned providers run. A planned provider that is not
+ * registered, or that fails, becomes an explicit notice. With "all_sources" completeness
+ * any gap adds an "incomplete" notice so callers never present partial context as whole.
+ */
+export async function assembleForPlan(
+  req: ContextRequest,
+  plan: AssemblyPlan,
+  registry: ReadonlyMap<string, ContextProvider>
+): Promise<GroundedContext & { invoked: string[] }> {
+  const selected: ContextProvider[] = [];
+  const missing: ProviderNotice[] = [];
+  for (const id of plan.providers) {
+    const p = registry.get(id);
+    if (p) selected.push(p);
+    else missing.push({ provider: id, status: 'unavailable', detail: 'Provider is not registered.' });
+  }
+  const ctx = await assembleContext(req, selected);
+  const notices = [...missing, ...ctx.notices];
+  if (plan.requiredCompleteness === 'all_sources' && notices.length > 0) {
+    notices.push({ provider: 'context', status: 'degraded', detail: 'Required sources were incomplete; do not treat this as a complete answer.' });
+  }
+  return { ...ctx, notices, invoked: selected.map((p) => p.name) };
 }
 
 /** Escapes text so it can never close or forge a delimiter tag. */

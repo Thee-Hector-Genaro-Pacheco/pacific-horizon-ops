@@ -981,3 +981,18 @@
 .kn-recent { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: var(--fs-sm); }
 .kn-recent li { display: grid; gap: 1px; }
 .kn-recent .muted { font-size: var(--fs-xs); }
+
+/* ------------------------------ Agent traces ------------------------------ */
+.ag-list { list-style: none; margin: 0; padding: 0; }
+.ag-item { padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--line-1); display: grid; gap: 3px; }
+.ag-item:last-child { border-bottom: 0; }
+.ag-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+.ag-time { margin-left: auto; font-size: var(--fs-xs); }
+.ag-input { font-size: var(--fs-sm); color: var(--text-2); }
+.ag-meta { font-size: var(--fs-xs); }
+.ag-status { font-size: var(--fs-xs); padding: 1px 6px; border-radius: 4px; background: var(--bg-3); }
+.ag-status--answered { color: var(--ok); }
+.ag-status--denied, .ag-status--error { color: var(--fail); }
+.ag-status--needs_approval, .ag-status--unavailable, .ag-status--insufficient, .ag-status--needs_clarification { color: var(--amber); }
+.ag-status--acknowledged, .ag-status--unknown, .ag-status--not_handled { color: var(--text-3); }
+.ag-risk { font-size: var(--fs-xs); color: var(--fail); }

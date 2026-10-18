@@ -36,6 +36,8 @@
     "knowledge:search": "tsx src/knowledge/cli.ts search",
     "knowledge:ask": "tsx src/knowledge/cli.ts ask",
     "knowledge:eval": "tsx src/knowledge/cli.ts eval",
+    "agent:inspect": "tsx src/agent/cli.ts inspect",
+    "agent:tools": "tsx src/agent/cli.ts tools",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
     "web:check": "npm --prefix web run typecheck && npm --prefix web run lint && npm --prefix web test",

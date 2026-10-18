@@ -30,6 +30,7 @@ import {
   CALENDAR_PROGRESS_TEXT,
   CALENDAR_VOICE_HELP,
   answerCalendarQuestion,
+  isCalendarRequest,
   routeReadDomain,
   type CalendarVoiceContext,
   type CalendarVoiceDeps,
@@ -53,8 +54,14 @@ import {
   KNOWLEDGE_VOICE_HELP,
   answerKnowledgeForVoice,
   isKnowledgeRequest,
+  type KnowledgeVoiceContext,
   type KnowledgeVoiceDeps,
 } from './knowledge.js';
+import { recordVoiceTurn, runVoiceKnowledge, runVoiceReadTool } from '../agent/voiceAdapter.js';
+import { resolveFollowUp, type FollowUpResolution, type ReadDomainState } from '../agent/followUp.js';
+
+type ReadFollowUp = Extract<FollowUpResolution, { kind: 'read' }>;
+import { CONFLICT_INTENT } from './calendar.js';
 
 export interface ConversationTurnResult {
   responseText: string;
@@ -1066,6 +1073,11 @@ interface DomainTurnArgs {
   knowledge?: KnowledgeVoiceDeps;
 }
 
+/** Read-domain dependencies handed to the agent harness (no secrets; injected fakes in tests). */
+function harnessDeps(args: DomainTurnArgs) {
+  return { photoBooth: args.photoBooth, calendar: args.calendar, email: args.email, knowledge: args.knowledge };
+}
+
 /** Enter (or stay in) a read domain. The mailbox resume point is saved only when leaving the mailbox. */
 function enterReadDomain(session: VoiceSession, voiceStore: VoiceStore, state: VoiceConversationState, reason: string): void {
   if (!READ_DOMAIN_STATES.has(session.conversationState)) {
@@ -1079,14 +1091,23 @@ function enterReadDomain(session: VoiceSession, voiceStore: VoiceStore, state: V
  * Answers one analytics question through the existing Photo Booth agent. Touches only
  * the voice session: no action store, executor, draft creator or Gmail access.
  */
-async function askPhotoBooth(args: DomainTurnArgs): Promise<ConversationTurnResult> {
+async function askPhotoBooth(args: DomainTurnArgs, followUp?: ReadFollowUp): Promise<ConversationTurnResult> {
   const { session, utterance, voiceStore } = args;
   const entering = session.conversationState !== 'PHOTO_BOOTH_ANALYTICS';
   enterReadDomain(session, voiceStore, 'PHOTO_BOOTH_ANALYTICS', entering ? 'Switched to Photo Booth analytics' : 'Photo Booth analytics follow-up');
   args.onProgress?.(PHOTO_BOOTH_PROGRESS_TEXT, { stillWorking: true });
 
   const previous = photoBoothContext(session);
-  const result = await askPhotoBoothForVoice(utterance, previous, args.photoBooth);
+  // Through the agent harness (policy, execution boundary, trace); same answerer underneath.
+  const result =
+    (await runVoiceReadTool<Awaited<ReturnType<typeof askPhotoBoothForVoice>>>('photobooth.analytics', {
+      session,
+      utterance,
+      previous,
+      deps: harnessDeps(args),
+      dataDir: voiceStore.getDataDir(),
+      followUp,
+    })) ?? { text: "I couldn't check the Photo Booth analytics right now.", ok: false, eventId: null, tools: [], outcome: 'harness_refused' };
 
   if (result.ok) {
     const context: PhotoBoothVoiceContext = {
@@ -1109,14 +1130,23 @@ async function askPhotoBooth(args: DomainTurnArgs): Promise<ConversationTurnResu
  * Answers one Calendar question through the read-only CalendarService. Touches only the
  * voice session: no action store, executor, draft creator or Gmail access.
  */
-async function askCalendar(args: DomainTurnArgs): Promise<ConversationTurnResult> {
+async function askCalendar(args: DomainTurnArgs, followUp?: ReadFollowUp): Promise<ConversationTurnResult> {
   const { session, utterance, voiceStore } = args;
   const entering = session.conversationState !== 'CALENDAR';
   enterReadDomain(session, voiceStore, 'CALENDAR', entering ? 'Switched to Calendar' : 'Calendar follow-up');
   args.onProgress?.(CALENDAR_PROGRESS_TEXT, { stillWorking: true });
 
   const previous = calendarContext(session);
-  const result = await answerCalendarQuestion(utterance, previous, args.calendar);
+  const toolId = followUp ? (followUp.toolId as 'calendar.read' | 'calendar.conflicts') : CONFLICT_INTENT.test(normalizeUtterance(utterance)) ? 'calendar.conflicts' : 'calendar.read';
+  const result =
+    (await runVoiceReadTool<Awaited<ReturnType<typeof answerCalendarQuestion>>>(toolId, {
+      session,
+      utterance,
+      previous,
+      deps: harnessDeps(args),
+      dataDir: voiceStore.getDataDir(),
+      followUp,
+    })) ?? { text: "I couldn't check your calendar right now.", ok: false, context: null, calls: [], outcome: 'harness_refused', scopeLabel: 'Calendar' };
   // Display-safe scope for the Command Center (profile labels only).
   voiceStore.updateSessionMetadata(session.sessionId, {
     readTaskLabel: `Checking calendar · ${result.scopeLabel}`,
@@ -1129,7 +1159,7 @@ async function askCalendar(args: DomainTurnArgs): Promise<ConversationTurnResult
 }
 
 /** Read-only inbox check across profiles. Never drafts and never touches the action store. */
-async function askEmail(args: DomainTurnArgs): Promise<ConversationTurnResult> {
+async function askEmail(args: DomainTurnArgs, followUp?: ReadFollowUp): Promise<ConversationTurnResult> {
   const { session, utterance, voiceStore } = args;
   const entering = session.conversationState !== 'EMAIL_READ';
   enterReadDomain(session, voiceStore, 'EMAIL_READ', entering ? 'Switched to inbox check' : 'Inbox check follow-up');
@@ -1137,7 +1167,15 @@ async function askEmail(args: DomainTurnArgs): Promise<ConversationTurnResult> {
   if (!/\b(first|second|third|1st|2nd|3rd|last)\b/.test(normalizeUtterance(utterance)) || !previous) {
     args.onProgress?.(EMAIL_PROGRESS_TEXT, { stillWorking: true });
   }
-  const result = await answerEmailQuestion(utterance, previous, args.email);
+  const result =
+    (await runVoiceReadTool<Awaited<ReturnType<typeof answerEmailQuestion>>>('gmail.read', {
+      session,
+      utterance,
+      previous,
+      deps: harnessDeps(args),
+      dataDir: voiceStore.getDataDir(),
+      followUp,
+    })) ?? { text: "I couldn't check your inboxes right now.", ok: false, context: null, outcome: 'harness_refused', scopeLabel: '', reads: 0 };
   voiceStore.updateSessionMetadata(session.sessionId, {
     ...(result.scopeLabel ? { readTaskLabel: `Checking inboxes · ${result.scopeLabel}` } : {}),
     ...(result.ok && result.context ? { inboxRead: result.context } : {}),
@@ -1152,12 +1190,26 @@ async function askEmail(args: DomainTurnArgs): Promise<ConversationTurnResult> {
  * Company-knowledge question through the shared grounding contract. Touches only the
  * voice session; retrieved text is evidence, never instructions, and no tools exist here.
  */
-async function askKnowledgeDomain(args: DomainTurnArgs): Promise<ConversationTurnResult> {
+async function askKnowledgeDomain(args: DomainTurnArgs, followUp?: ReadFollowUp): Promise<ConversationTurnResult> {
   const { session, utterance, voiceStore } = args;
   const entering = session.conversationState !== 'KNOWLEDGE';
   enterReadDomain(session, voiceStore, 'KNOWLEDGE', entering ? 'Switched to company knowledge' : 'Company knowledge follow-up');
   args.onProgress?.(KNOWLEDGE_PROGRESS_TEXT, { stillWorking: true });
-  const result = await answerKnowledgeForVoice(utterance, args.knowledge);
+  const previous = session.metadata?.knowledge as KnowledgeVoiceContext | undefined;
+  const run = await runVoiceKnowledge<Awaited<ReturnType<typeof answerKnowledgeForVoice>>>({
+    session,
+    utterance,
+    lastQuestion: !entering && typeof previous?.lastQuestion === 'string' ? previous.lastQuestion : null,
+    deps: harnessDeps(args),
+    dataDir: voiceStore.getDataDir(),
+    followUp,
+  });
+  if (run.clarification) {
+    console.log(`[voice:knowledge] [session:${session.sessionId}] Knowledge clarification requested (${run.canonical.reason})`);
+    voiceStore.updateConversationState(session.sessionId, 'KNOWLEDGE', { lastSpokenText: run.clarification, reason: `Knowledge clarification (${run.canonical.reason})` });
+    return { responseText: run.clarification, endCall: false };
+  }
+  const result = run.result ?? { text: "Company knowledge isn't available right now.", ok: false, context: null, outcome: 'harness_refused' };
   if (result.context) voiceStore.updateSessionMetadata(session.sessionId, { knowledge: result.context });
   const sources = result.context?.citations.map((c) => `${c.title}${c.section ? ` › ${c.section}` : ''}`).join('; ') || 'none';
   const audit = `Knowledge ${result.outcome} (evidence: ${sources})`;
@@ -1232,13 +1284,48 @@ async function handleReadDomainTurn(args: DomainTurnArgs): Promise<ConversationT
     );
   }
 
-  // Explicit questions for another read domain switch; anything else is a follow-up here.
+  // Explicit questions for a read domain (this one or another) run that domain.
   const route = routeReadDomain(norm);
-  if (route === 'calendar' && !isCalendar) return askCalendar(args);
-  if (route === 'photo_booth' && current !== 'PHOTO_BOOTH_ANALYTICS') return askPhotoBooth(args);
-  if (isKnowledge) return askKnowledgeDomain(args);
-  if (isEmail) return askEmail(args);
-  return isCalendar ? askCalendar(args) : askPhotoBooth(args);
+  if (route === 'calendar' || (isCalendar && isCalendarRequest(norm))) return askCalendar(args);
+  if (route === 'photo_booth') return askPhotoBooth(args);
+
+  // Anything else is a follow-up ONLY if the bounded follow-up grammar resolves it to a
+  // read intent in this domain. Unknown never re-runs the last tool.
+  const followUp = resolveFollowUp(args.utterance, current as ReadDomainState);
+  if (followUp.kind === 'read') {
+    if (isKnowledge && followUp.toolId === 'knowledge.provenance') return answerKnowledgeProvenance(args, followUp);
+    if (isKnowledge) return askKnowledgeDomain(args, followUp);
+    if (isEmail) return askEmail(args, followUp);
+    return isCalendar ? askCalendar(args, followUp) : askPhotoBooth(args, followUp);
+  }
+  const acknowledged = followUp.kind === 'acknowledgement';
+  const responseText = acknowledged
+    ? `${followUp.reason === 'thanks' ? "You're welcome." : 'Okay.'} Anything else? You can ask another question, say "go back to my inbox", or say goodbye.`
+    : `Sorry, I didn't catch that. You can ask another ${domainName} question, say "go back to my inbox", or say goodbye.`;
+  recordVoiceTurn({
+    session,
+    utterance: args.utterance,
+    dataDir: voiceStore.getDataDir(),
+    status: acknowledged ? 'acknowledged' : 'needs_clarification',
+    kind: acknowledged ? 'acknowledgement' : 'clarification',
+    reason: followUp.reason,
+  });
+  console.log(`[voice:followup] [session:${session.sessionId}] No tool for unresolved turn in ${current} (${followUp.kind}: ${followUp.reason})`);
+  return stay(responseText, `Unresolved turn in ${domainName}: ${followUp.kind} (${followUp.reason}); no tool run`);
+}
+
+/** "Where does it say that?": answered from the stored, display-safe citations of the last answer. No retrieval. */
+function answerKnowledgeProvenance(args: DomainTurnArgs, followUp: ReadFollowUp): ConversationTurnResult {
+  const { session, voiceStore } = args;
+  const ctx = session.metadata?.knowledge as KnowledgeVoiceContext | undefined;
+  const cites = ctx?.citations ?? [];
+  const responseText =
+    cites.length === 0
+      ? "That last answer didn't come from a stored company document."
+      : `That came from ${[...new Set(cites.map((c) => (c.section ? `${c.title}, section ${c.section}` : c.title)))].join('; and ')}.`;
+  recordVoiceTurn({ session, utterance: args.utterance, dataDir: voiceStore.getDataDir(), status: 'answered', kind: 'context_answer', reason: 'provenance_from_stored_citations', followUp });
+  voiceStore.updateConversationState(session.sessionId, 'KNOWLEDGE', { lastSpokenText: responseText, reason: 'Knowledge provenance from stored citations' });
+  return { responseText, endCall: false };
 }
 
 function returnToMailbox(session: VoiceSession, voiceStore: VoiceStore, actionStore: ActionStore, from: string): ConversationTurnResult {

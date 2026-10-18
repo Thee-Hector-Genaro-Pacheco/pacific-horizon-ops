@@ -35,6 +35,9 @@ import type { PhotoBoothVoiceDeps } from './analytics.js';
 import type { CalendarVoiceDeps } from './calendar.js';
 import type { KnowledgeVoiceDeps } from './knowledge.js';
 
+/** Identical final transcripts closer together than this are treated as one utterance. */
+export const DUPLICATE_FINAL_WINDOW_MS = 2000;
+
 export interface VoiceServerOptions {
   port?: number;
   voiceStore?: VoiceStore;
@@ -353,6 +356,8 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
     }, 20000);
 
     let isEnding = false;
+    /** Last final prompt on this connection, for the duplicate-final guard below. */
+    let lastFinal: { norm: string; at: number } | null = null;
 
     ws.on('message', async (data: Buffer | string) => {
       try {
@@ -447,6 +452,17 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
             console.log(`[voice:server] [session:${sessionId}] Ignoring prompt because call is already terminating`);
             return;
           }
+
+          // ConversationRelay marks final transcripts with last: true. The same final text
+          // delivered twice within a moment is one utterance: run it once. Different text
+          // (including a fragment followed by its continuation) is never merged.
+          const finalNorm = utterance.toLowerCase().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, ' ').trim();
+          const now = Date.now();
+          if (lastFinal && lastFinal.norm === finalNorm && now - lastFinal.at < DUPLICATE_FINAL_WINDOW_MS) {
+            console.log(`[voice:server] [session:${sessionId}] Duplicate final prompt ignored (${now - lastFinal.at} ms after the first)`);
+            return;
+          }
+          lastFinal = { norm: finalNorm, at: now };
 
           const freshSession = voiceStore.getSession(sessionId) || session;
           console.log(`[voice:server] [session:${sessionId}] Processing prompt in state ${freshSession.conversationState}`);

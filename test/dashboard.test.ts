@@ -8,6 +8,7 @@ import { VoiceStore } from '../src/voice/store.js';
 import { loadSnapshot } from '../src/dashboard/sources.js';
 import { buildReadModel, sanitizeText, parseSender, ownerMatcher } from '../src/dashboard/readModel.js';
 import { createDashboardServer } from '../src/dashboard/server.js';
+import { FileTraceRecorder } from '../src/agent/trace.js';
 
 const OWNER_PHONE = '+15555550123';
 const BUSINESS_PHONE = '+15555550999';
@@ -270,6 +271,28 @@ describe('Command Center API server', () => {
     const body = (await res.json()) as { source: string; data: { counts: { pendingApprovals: number } } };
     assert.equal(body.source, 'live');
     assert.equal(body.data.counts.pendingApprovals, 1);
+  });
+
+  it('serves redacted agent traces read-only, without session or request IDs', async () => {
+    const empty = (await (await fetch(`${base}/api/agent/traces`)).json()) as { data: unknown[] };
+    assert.deepEqual(empty.data, []);
+    const recorder = new FileTraceRecorder(dataDir);
+    recorder.record({
+      traceId: 'trace_1', requestId: 'req_secret_1', sessionId: 'sess_secret_1', organizationId: 'pacific-horizon-labs', channel: 'voice',
+      at: new Date().toISOString(), inputPreview: 'mail owner@example.com key sk-ant-api03-abcdefghijk',
+      intent: { intent: 'knowledge.query', domain: 'knowledge', source: 'deterministic', highRisk: false, confidence: 1 },
+      plan: { providers: ['knowledge'], completeness: 'best_effort' }, providersInvoked: ['knowledge'], toolsConsidered: ['knowledge.search'],
+      policy: [{ toolId: 'knowledge.search', decision: 'allow', reason: 'read_only', trigger: 'deterministic_command' }],
+      approvalRequired: false, toolOutcome: { toolId: 'knowledge.search', ok: true, outcome: 'answered:1' }, notices: [], latencyMs: 5, status: 'answered', dryRun: false,
+    });
+    const res = await fetch(`${base}/api/agent/traces?limit=5`);
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.doesNotMatch(text, /sess_secret_1|req_secret_1|owner@example\.com|sk-ant-api03/);
+    const body = JSON.parse(text) as { data: Array<{ intent: { intent: string } }> };
+    assert.equal(body.data[0].intent.intent, 'knowledge.query');
+    assert.equal((await fetch(`${base}/api/agent/traces`, { method: 'POST' })).status, 405);
+    assert.equal((await fetch(`${base}/api/agent/run`)).status, 404);
   });
 
   it('rejects every non-GET method so approvals cannot be bypassed', async () => {

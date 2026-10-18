@@ -3,6 +3,7 @@ import { createEmbeddingProvider } from '../knowledge/embeddings.js';
 import { INSUFFICIENT_KNOWLEDGE, askKnowledge, type GroundedAnswer } from '../knowledge/grounding.js';
 import { consoleKnowledgeLogger } from '../knowledge/log.js';
 import { migrate } from '../knowledge/migrations.js';
+import type { QueryRewriter } from '../agent/canonicalize.js';
 
 /**
  * Read-only company-knowledge questions for Pacific Ops voice. Answers come only from
@@ -13,6 +14,11 @@ import { migrate } from '../knowledge/migrations.js';
 export interface KnowledgeVoiceDeps {
   /** Injected in tests; defaults to the configured knowledge store + Anthropic. */
   answer?: (question: string) => Promise<GroundedAnswer>;
+  /**
+   * Read-only transcript rewriter. undefined: the model-backed default when the live
+   * store is used (never with an injected answerer); null: deterministic rules only.
+   */
+  rewrite?: QueryRewriter | null;
 }
 
 export interface KnowledgeVoiceContext {
@@ -36,8 +42,22 @@ const KNOWLEDGE_PATTERNS: RegExp[] = [
   /\baccording to (?:our|the) (?:docs|documentation|policy|policies|handbook)\b/,
 ];
 
+/** Mailbox words: "the email about the privacy policy" stays with the mailbox. */
+const MAILBOX_ANCHORS = /\b(?:e-?mails?|messages?|inbox|mailbox|drafts?|reply|replies|sender)\b/;
+
+/**
+ * Questions about what Pacific Ops / the AI is allowed to do on its own are company-policy
+ * questions ("Should AI have signed a lease for the company on its own?"). Read-only:
+ * grounding decides whether stored knowledge actually answers them.
+ */
+const AUTHORITY_QUESTION =
+  /^(?:can|could|should|would|is|are|may|does|do|did)\b.*\b(?:pacific ops|the ai|ai|the agent|the assistant)\b.*\b(?:on its own|by itself|automatically|without (?:my |the owner'?s? |owner )?(?:approval|permission)|allowed to|permitted to|authori[sz]ed to)\b/;
+
 export function isKnowledgeRequest(norm: string): boolean {
-  return KNOWLEDGE_PATTERNS.some((p) => p.test(norm));
+  if (KNOWLEDGE_PATTERNS.some((p) => p.test(norm))) return true;
+  if (AUTHORITY_QUESTION.test(norm)) return true;
+  // "What is our sponsored event policy?", "What's the cancellation policy?"
+  return /\b(?:policy|policies)\b/.test(norm) && !MAILBOX_ANCHORS.test(norm);
 }
 
 let shared: { db: SqlDb; ready: Promise<unknown> } | null = null;

@@ -605,6 +605,46 @@ Voice: "What is our policy for sponsored photo booth events?", "What does our do
 
 ---
 
+## Agent Harness (PHRO-AI-002)
+
+`src/agent/` is the policy-governed orchestration layer every channel goes through. It adds no integrations and no new mutations: read tools wrap the existing answerers, and the Gmail draft/approve/send lifecycle stays in the mailbox flow.
+
+```
+AgentRequest → IntentRouter → ContextPlanner → ToolRegistry → PolicyEngine
+  → ApprovalGateway (mutating tools only) → ExecutionBoundary → AgentTrace → AgentResult
+```
+
+- **Request / session / result** (`types.ts`, `session.ts`): a strict zod `AgentRequest` (org, session, channel, actor, input ≤ 2,000 chars, primitive metadata). `SessionContext` holds domain, account scope, the bound action ID + draft ID and confirmation state, never message bodies, phone numbers or tokens. `memoryRefs` is reserved and always empty.
+- **Intent router** (`intents.ts`): wraps the existing voice matchers. Draft, approve, confirm and reject are matched by exact phrases only and marked `highRisk`. An optional model resolver is consulted only when nothing matched, may return only `knowledge.query`, `calendar.schedule`, `gmail.inbox` or `photobooth.analytics`, and needs confidence ≥ 0.7.
+- **Context planner / assembler** (`planner.ts`, `cognition/context.ts#assembleForPlan`): runs only the providers an intent needs. Availability and conflict questions require `all_sources`; any gap adds an "incomplete" notice instead of a clean answer. Providers (`providers.ts`) wrap the existing knowledge, Calendar, inbox and Photo Booth reads.
+- **Model gateway** (`gateway.ts`): purpose, timeout, optional schema validation, and an audit record of sizes and latency. Never prompt text or keys.
+- **Tool registry** (`tools.ts`): every tool declares effect (`read`/`prepare`/`write`/`financial`), risk, approval policy and capabilities. Registration refuses duplicates, future contracts, read tools with approval, and write/financial/critical tools without `confirmation_required`.
+- **Policy engine** (`policy.ts`): deterministic `allow` / `deny` / `requires_approval` from tool metadata, actor, org/session match, confirmation state and the approval verdict. A model-originated trigger can only read. Reads are refused while a two-step confirmation is pending.
+- **Approval gateway** (`approval.ts`): a read-only view of the Gmail lifecycle. `confirmed` only when the session-bound action (matching draft) is `APPROVED` with a voice/CLI approval record. A casual "yes", a timeout, a dropped call, model output and retrieved knowledge never change lifecycle state, so they never authorize anything.
+- **Execution boundary** (`boundary.ts`): Map lookup by exact ID (no dynamic dispatch), zod-validated arguments, approval verification, policy, then the implementation. `gmail.sendApprovedDraft` delegates to the existing executor, which re-checks `APPROVED`, exact draft content and idempotency. Voice does not use it yet; mailbox sending stays on the legacy path until parity is proven.
+- **Traces** (`trace.ts`): intent, plan, providers, tools, policy decisions, outcome, latency, status. Inputs are redacted (keys, OAuth tokens, DB URLs, emails, phone numbers) and clipped; no answers, prompts, bodies or provenance IDs. Stored in `data/agent-traces.jsonl` (0600, gitignored) and shown read-only on the Command Center **Agent** page (`GET /api/agent/traces`, no session or request IDs).
+
+Voice routes knowledge, Calendar, inbox reads and Photo Booth through `voiceAdapter.ts`; spoken answers are unchanged.
+
+Knowledge questions are canonicalized first (`canonicalize.ts`), for retrieval and grounding only. The raw transcript stays the request input and trace preview. Known ASR damage maps onto corpus vocabulary ("Sponsored United policies?" and "These are sponsor event policies." become "What is our sponsored event policy?"), policy fragments are framed as questions in the owner's own words, and "What about X?" follow-ups use the previous knowledge question. Anything else may go to a tool-less model rewrite. That rewrite is rejected if it answers, adds words or numbers the owner didn't say, or mentions an action; when in doubt, Pacific Ops asks the owner to rephrase. Non-knowledge intents and any transcript containing an approve, send, delete, schedule, Ads or trading verb pass through byte-for-byte. The grounding sufficiency gate is unchanged.
+
+```bash
+npm run agent:inspect -- "Do I have any conflicts Saturday?"   # dry run: intent, plan, tools, policy; executes nothing
+npm run agent:tools                                            # registry + future contracts
+```
+
+### Adding a future domain
+
+New domains (Google Ads, crypto) follow one contract:
+
+1. Ship read tools first (`effect: 'read'`, `approvalPolicy: 'none'`) wrapping a tested client, plus a `ContextProvider` if cross-domain reasoning needs it.
+2. Anything that changes external state is `write` or `financial`, requires `confirmation_required`, and gets a domain `ApprovalGateway` backed by its own persisted, two-step lifecycle with bound action identity and idempotent execution. Money-moving tools are `critical`.
+3. Add the intent deterministically (and to the model-assist allowlist only if read-only), map it in the planner, and add parity tests before any channel uses it.
+
+`FUTURE_TOOL_CONTRACTS` documents `calendar.create`, `ads.google.read`, `ads.google.modify`, `crypto.marketData`, `crypto.validator.health`, `crypto.paperTrade` and `crypto.liveTrade`. They are data only: the registry refuses to register them and the boundary answers `unregistered_tool`.
+
+---
+
 ## Acceptance Criteria & Testing Verification
 
 1. **Authentication**: First run opens Google consent and creates `token.json`.

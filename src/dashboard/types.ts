@@ -539,3 +539,30 @@ export interface KnowledgeSearchDTO {
   latencyMs: number;
   results: KnowledgeHitDTO[];
 }
+
+/* ------------------------------------------------------------------ */
+/* Agent traces (read-only, already redacted at write time)             */
+/* ------------------------------------------------------------------ */
+
+export interface AgentTraceDTO {
+  traceId: string;
+  at: string;
+  channel: 'voice' | 'web' | 'api';
+  inputPreview: string;
+  /** Read-only knowledge canonicalization: what the owner said vs. the question that was searched. */
+  normalization: { changed: boolean; confidence: number; method: string; canonicalPreview: string | null } | null;
+  /** Why a turn inherited the active read domain (follow-up resolver), if it did. */
+  followUp: { inheritedDomain: string; inheritedIntent: string; reason: string } | null;
+  /** Turns that ran no tool on purpose: acknowledgement, clarification, or a reply from stored context. */
+  resolution: { kind: string; reason: string } | null;
+  intent: { intent: string; domain: string; source: string; highRisk: boolean; confidence: number };
+  plan: { providers: string[]; completeness: string } | null;
+  providersInvoked: string[];
+  toolsConsidered: string[];
+  policy: Array<{ toolId: string; decision: string; reason: string; trigger: string }>;
+  approvalRequired: boolean;
+  toolOutcome: { toolId: string; ok: boolean; outcome: string } | null;
+  latencyMs: number;
+  status: string;
+  dryRun: boolean;
+}

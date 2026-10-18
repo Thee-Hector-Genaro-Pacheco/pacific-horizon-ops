@@ -6,6 +6,7 @@ import type {
   CalendarHubView,
   CallDTO,
   KnowledgeSearchDTO,
+  AgentTraceDTO,
   KnowledgeStatusDTO,
   ChangeEventDTO,
   CommandCenterDTO,
@@ -64,6 +65,11 @@ export interface KnowledgeService {
   search(query: string): Promise<KnowledgeSearchDTO>;
 }
 
+/** Read-only harness traces (redacted at write time). */
+export interface AgentTraceService {
+  listTraces(limit?: number): Promise<AgentTraceDTO[]>;
+}
+
 export interface ActivityService {
   listActivity(limit?: number): Promise<ActivityDTO[]>;
 }
@@ -102,6 +108,7 @@ export interface PacificServices {
   activity: ActivityService;
   calendar: CalendarHubService;
   knowledge: KnowledgeService;
+  agent: AgentTraceService;
   realtime: RealtimeService;
   /** Observational Pacific Ops runtime (voice state). Read-only, like everything here. */
   runtime: RuntimeService;
