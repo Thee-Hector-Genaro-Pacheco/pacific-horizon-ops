@@ -47,6 +47,14 @@ import {
   type EmailVoiceContext,
   type EmailVoiceDeps,
 } from './email.js';
+import {
+  KNOWLEDGE_MAILBOX_COMMAND_GUIDANCE,
+  KNOWLEDGE_PROGRESS_TEXT,
+  KNOWLEDGE_VOICE_HELP,
+  answerKnowledgeForVoice,
+  isKnowledgeRequest,
+  type KnowledgeVoiceDeps,
+} from './knowledge.js';
 
 export interface ConversationTurnResult {
   responseText: string;
@@ -159,6 +167,8 @@ export async function handleVoiceUtterance(params: {
   calendar?: CalendarVoiceDeps;
   /** Read-only multi-inbox dependencies (mocked in tests). */
   email?: EmailVoiceDeps;
+  /** Read-only company-knowledge dependencies (mocked in tests). */
+  knowledge?: KnowledgeVoiceDeps;
   draftCreator?: (params: {
     to: string;
     subject: string;
@@ -188,11 +198,14 @@ export async function handleVoiceUtterance(params: {
     photoBooth: params.photoBooth,
     calendar: params.calendar,
     email: params.email,
+    knowledge: params.knowledge,
   };
   if (READ_DOMAIN_STATES.has(session.conversationState)) {
     return handleReadDomainTurn(domain);
   }
   if (!ANALYTICS_BLOCKED_STATES.has(session.conversationState)) {
+    // Company-knowledge questions ("what is our policy...") first: they may mention the booth or events.
+    if (isKnowledgeRequest(normalizeUtterance(utterance))) return askKnowledgeDomain(domain);
     if (isEmailReadRequest(normalizeUtterance(utterance), emailProfiles(params.email))) return askEmail(domain);
     const route = routeReadDomain(normalizeUtterance(utterance));
     if (route === 'calendar') return askCalendar(domain);
@@ -1039,7 +1052,7 @@ function photoBoothContext(session: VoiceSession): PhotoBoothVoiceContext | null
 }
 
 /** Read-only domains Pacific Ops can switch between without losing mailbox state. */
-const READ_DOMAIN_STATES = new Set<VoiceConversationState>(['PHOTO_BOOTH_ANALYTICS', 'CALENDAR', 'EMAIL_READ']);
+const READ_DOMAIN_STATES = new Set<VoiceConversationState>(['PHOTO_BOOTH_ANALYTICS', 'CALENDAR', 'EMAIL_READ', 'KNOWLEDGE']);
 
 interface DomainTurnArgs {
   session: VoiceSession;
@@ -1050,6 +1063,7 @@ interface DomainTurnArgs {
   photoBooth?: PhotoBoothVoiceDeps;
   calendar?: CalendarVoiceDeps;
   email?: EmailVoiceDeps;
+  knowledge?: KnowledgeVoiceDeps;
 }
 
 /** Enter (or stay in) a read domain. The mailbox resume point is saved only when leaving the mailbox. */
@@ -1134,6 +1148,24 @@ async function askEmail(args: DomainTurnArgs): Promise<ConversationTurnResult> {
   return { responseText: result.text, endCall: false };
 }
 
+/**
+ * Company-knowledge question through the shared grounding contract. Touches only the
+ * voice session; retrieved text is evidence, never instructions, and no tools exist here.
+ */
+async function askKnowledgeDomain(args: DomainTurnArgs): Promise<ConversationTurnResult> {
+  const { session, utterance, voiceStore } = args;
+  const entering = session.conversationState !== 'KNOWLEDGE';
+  enterReadDomain(session, voiceStore, 'KNOWLEDGE', entering ? 'Switched to company knowledge' : 'Company knowledge follow-up');
+  args.onProgress?.(KNOWLEDGE_PROGRESS_TEXT, { stillWorking: true });
+  const result = await answerKnowledgeForVoice(utterance, args.knowledge);
+  if (result.context) voiceStore.updateSessionMetadata(session.sessionId, { knowledge: result.context });
+  const sources = result.context?.citations.map((c) => `${c.title}${c.section ? ` › ${c.section}` : ''}`).join('; ') || 'none';
+  const audit = `Knowledge ${result.outcome} (evidence: ${sources})`;
+  console.log(`[voice:knowledge] [session:${session.sessionId}] ${audit}`);
+  voiceStore.updateConversationState(session.sessionId, 'KNOWLEDGE', { lastSpokenText: result.text, reason: audit });
+  return { responseText: result.text, endCall: false };
+}
+
 function emailContext(session: VoiceSession): EmailVoiceContext | null {
   const ctx = session.metadata?.inboxRead as EmailVoiceContext | null | undefined;
   return ctx && typeof ctx === 'object' ? ctx : null;
@@ -1150,7 +1182,8 @@ async function handleReadDomainTurn(args: DomainTurnArgs): Promise<ConversationT
   const current = session.conversationState;
   const isCalendar = current === 'CALENDAR';
   const isEmail = current === 'EMAIL_READ';
-  const domainName = isEmail ? 'inbox check' : isCalendar ? 'Calendar' : 'Photo Booth analytics';
+  const isKnowledge = current === 'KNOWLEDGE';
+  const domainName = isKnowledge ? 'company knowledge' : isEmail ? 'inbox check' : isCalendar ? 'Calendar' : 'Photo Booth analytics';
   const norm = normalizeUtterance(args.utterance);
   const stay = (responseText: string, reason?: string): ConversationTurnResult => {
     voiceStore.updateConversationState(session.sessionId, current, { lastSpokenText: responseText, reason });
@@ -1170,6 +1203,7 @@ async function handleReadDomainTurn(args: DomainTurnArgs): Promise<ConversationT
 
   // Multi-inbox requests ("check my personal inbox", "all my inboxes") before the
   // business-mailbox return, which also matches inbox phrasing.
+  if (isKnowledgeRequest(norm)) return askKnowledgeDomain(args);
   if (isEmailReadRequest(norm, emailProfiles(args.email))) return askEmail(args);
 
   if (isReturnToInboxRequest(norm)) {
@@ -1177,7 +1211,7 @@ async function handleReadDomainTurn(args: DomainTurnArgs): Promise<ConversationT
   }
 
   if (norm === 'help' || norm.includes('options') || norm.includes('what can i say')) {
-    return stay(isEmail ? EMAIL_READ_HELP : isCalendar ? CALENDAR_VOICE_HELP : PHOTO_BOOTH_VOICE_HELP);
+    return stay(isKnowledge ? KNOWLEDGE_VOICE_HELP : isEmail ? EMAIL_READ_HELP : isCalendar ? CALENDAR_VOICE_HELP : PHOTO_BOOTH_VOICE_HELP);
   }
 
   // Drafting is never done from a read-only check, and never silently from another account.
@@ -1187,7 +1221,13 @@ async function handleReadDomainTurn(args: DomainTurnArgs): Promise<ConversationT
 
   if (isMailboxActionCommand(norm)) {
     return stay(
-      isEmail ? EMAIL_MAILBOX_COMMAND_GUIDANCE : isCalendar ? CALENDAR_MAILBOX_COMMAND_GUIDANCE : PHOTO_BOOTH_MAILBOX_COMMAND_GUIDANCE,
+      isKnowledge
+        ? KNOWLEDGE_MAILBOX_COMMAND_GUIDANCE
+        : isEmail
+          ? EMAIL_MAILBOX_COMMAND_GUIDANCE
+          : isCalendar
+            ? CALENDAR_MAILBOX_COMMAND_GUIDANCE
+            : PHOTO_BOOTH_MAILBOX_COMMAND_GUIDANCE,
       `Mailbox command refused while in ${domainName}`
     );
   }
@@ -1196,6 +1236,7 @@ async function handleReadDomainTurn(args: DomainTurnArgs): Promise<ConversationT
   const route = routeReadDomain(norm);
   if (route === 'calendar' && !isCalendar) return askCalendar(args);
   if (route === 'photo_booth' && current !== 'PHOTO_BOOTH_ANALYTICS') return askPhotoBooth(args);
+  if (isKnowledge) return askKnowledgeDomain(args);
   if (isEmail) return askEmail(args);
   return isCalendar ? askCalendar(args) : askPhotoBooth(args);
 }

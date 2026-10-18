@@ -42,6 +42,7 @@ export type RuntimeOperation =
   | 'photo_booth_analytics'
   | 'calendar_read'
   | 'email_read'
+  | 'knowledge_read'
   | 'wrap_up';
 
 /** Display-safe context. Sender display name and subject only: no addresses, bodies or IDs. */

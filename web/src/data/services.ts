@@ -5,6 +5,8 @@ import type {
   CalendarHubDTO,
   CalendarHubView,
   CallDTO,
+  KnowledgeSearchDTO,
+  KnowledgeStatusDTO,
   ChangeEventDTO,
   CommandCenterDTO,
   CustomerDTO,
@@ -56,6 +58,12 @@ export interface CalendarHubService {
   getHub(query: { view: CalendarHubView; date?: string | null; sourceIds: string[] | null }): Promise<CalendarHubDTO>;
 }
 
+/** Read-only knowledge diagnostics. Ingestion is CLI-only; there is no write method. */
+export interface KnowledgeService {
+  getStatus(): Promise<KnowledgeStatusDTO>;
+  search(query: string): Promise<KnowledgeSearchDTO>;
+}
+
 export interface ActivityService {
   listActivity(limit?: number): Promise<ActivityDTO[]>;
 }
@@ -93,6 +101,7 @@ export interface PacificServices {
   leads: LeadService;
   activity: ActivityService;
   calendar: CalendarHubService;
+  knowledge: KnowledgeService;
   realtime: RealtimeService;
   /** Observational Pacific Ops runtime (voice state). Read-only, like everything here. */
   runtime: RuntimeService;

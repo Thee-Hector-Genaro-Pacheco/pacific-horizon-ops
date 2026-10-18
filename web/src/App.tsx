@@ -11,6 +11,7 @@ import { CommandCenterPage } from './pages/CommandCenterPage';
 import { CustomerProfilePage } from './pages/CustomerProfilePage';
 import { CustomersPage } from './pages/CustomersPage';
 import { InboxPage } from './pages/InboxPage';
+import { KnowledgePage } from './pages/KnowledgePage';
 import { LeadsPage } from './pages/LeadsPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -34,6 +35,7 @@ export function App() {
                 <Route path="customers/:id" element={<CustomerProfilePage />} />
                 <Route path="activity" element={<ActivityPage />} />
                 <Route path="analytics" element={<AnalyticsPage />} />
+                <Route path="knowledge" element={<KnowledgePage />} />
                 <Route path="settings" element={<SettingsPage />} />
                 <Route path="*" element={<NotFoundPage />} />
               </Route>

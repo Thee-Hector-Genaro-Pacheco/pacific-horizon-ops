@@ -12,6 +12,12 @@ import { readRuntimeState, resolveRuntimeState, RUNTIME_FILES, type ResolvedRunt
 import { buildCalendarHub, CalendarHubRequestError } from '../calendar/hub.js';
 import { calendarSourcesFromRegistry, type CalendarSource } from '../calendar/multi.js';
 import { parseLocalDate } from '../calendar/time.js';
+import { DEFAULT_ORGANIZATION_ID, KnowledgeError, createPgDb, loadKnowledgeDbConfig, type SqlDb } from '../knowledge/db.js';
+import { createEmbeddingProvider, type EmbeddingProvider } from '../knowledge/embeddings.js';
+import { migrate } from '../knowledge/migrations.js';
+import { retrieveKnowledge } from '../knowledge/retrieval.js';
+import { knowledgeStatus } from '../knowledge/status.js';
+import type { KnowledgeSearchDTO, KnowledgeStatusDTO } from './types.js';
 import type { CalendarHubView } from './types.js';
 
 // The DTO is the wire shape of the resolved runtime; keep them structurally identical.
@@ -39,6 +45,8 @@ export interface DashboardServerOptions {
   env?: NodeJS.ProcessEnv;
   /** Read-only Calendar sources for the Calendar Hub. Defaults to the Google profile registry. */
   calendarSources?: () => { sources: CalendarSource[]; timeZone: string };
+  /** Read-only knowledge store access. Defaults to PHRO_KNOWLEDGE_DATABASE_URL; null if unset. */
+  knowledge?: () => { db: SqlDb; embedder: EmbeddingProvider | null; organizationId: string } | null;
 }
 
 const RECENT_SUCCESS_MS = 24 * 60 * 60 * 1000;
@@ -293,6 +301,85 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
     res.end(JSON.stringify({ error: what }));
   }
 
+  // Knowledge store: opened lazily, migrated once, shared across requests.
+  let knowledgeDeps: { db: SqlDb; embedder: EmbeddingProvider | null; organizationId: string; ready: Promise<unknown> } | null | undefined;
+  function knowledge() {
+    if (knowledgeDeps === undefined) {
+      const injected = options.knowledge;
+      if (injected) {
+        const d = injected();
+        knowledgeDeps = d ? { ...d, ready: migrate(d.db) } : null;
+      } else if (!env.PHRO_KNOWLEDGE_DATABASE_URL?.trim()) {
+        knowledgeDeps = null;
+      } else {
+        const db = createPgDb(loadKnowledgeDbConfig(env));
+        knowledgeDeps = {
+          db,
+          embedder: createEmbeddingProvider(env),
+          organizationId: env.PHRO_ORGANIZATION_ID?.trim() || DEFAULT_ORGANIZATION_ID,
+          ready: migrate(db),
+        };
+      }
+    }
+    return knowledgeDeps;
+  }
+
+  function emptyKnowledgeStatus(database: KnowledgeStatusDTO['database'], detail: string | null): KnowledgeStatusDTO {
+    return { database, detail, organizationId: DEFAULT_ORGANIZATION_ID, sources: 0, documents: 0, chunks: 0, chunksWithVectors: 0, embedding: null, lastIngestion: null, recentQueries: [] };
+  }
+
+  async function handleKnowledge(sub: string | undefined, url: URL, res: http.ServerResponse) {
+    const k = knowledge();
+    if (sub === 'status') {
+      if (!k) return send(res, 200, emptyKnowledgeStatus('not_configured', 'Set PHRO_KNOWLEDGE_DATABASE_URL to enable the knowledge store.'));
+      try {
+        await k.ready;
+        const s = await knowledgeStatus(k.db, k.organizationId, k.embedder);
+        return send(res, 200, { ...s, detail: null } satisfies KnowledgeStatusDTO);
+      } catch (err) {
+        knowledgeDeps = undefined; // retry migration/connection on the next request
+        return send(res, 200, emptyKnowledgeStatus('offline', err instanceof KnowledgeError ? err.message : 'Knowledge database is unavailable.'));
+      }
+    }
+    if (sub === 'search') {
+      const q = (url.searchParams.get('q') ?? '').trim();
+      if (!q || q.length > 500) return badRequest(res, 'q is required (max 500 characters)');
+      if (!k) {
+        res.writeHead(503, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Knowledge store is not configured.' }));
+        return;
+      }
+      try {
+        await k.ready;
+        const r = await retrieveKnowledge(k.db, k.embedder, { organizationId: k.organizationId, query: q, limit: 8 });
+        const body: KnowledgeSearchDTO = {
+          query: q,
+          mode: r.mode,
+          degraded: r.degraded,
+          latencyMs: r.latencyMs,
+          results: r.results.map((x, i) => ({
+            rank: i + 1,
+            title: x.title,
+            section: x.section,
+            sourceLabel: x.sourceLabel,
+            excerpt: x.text.slice(0, 400),
+            score: x.score,
+            coverage: x.coverage,
+            lexicalScore: x.lexicalScore,
+            vectorScore: x.vectorScore,
+          })),
+        };
+        return send(res, 200, body);
+      } catch {
+        knowledgeDeps = undefined;
+        res.writeHead(503, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Knowledge database is unavailable.' }));
+        return;
+      }
+    }
+    return notFound(res);
+  }
+
   function badRequest(res: http.ServerResponse, message: string) {
     res.writeHead(400, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ error: message }));
@@ -336,6 +423,8 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
       }
       case 'analytics':
         return send(res, 200, m.analytics);
+      case 'knowledge':
+        return handleKnowledge(id, url, res);
       case 'calendar': {
         const viewParam = url.searchParams.get('view') ?? 'today';
         if (!['month', 'week', 'day', 'upcoming', 'today'].includes(viewParam)) return badRequest(res, 'view must be month, week, day, upcoming or today');
@@ -469,6 +558,9 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
     watcher?.close();
     for (const res of clients) res.end();
     clients.clear();
+    // Close a knowledge pool this server opened itself (injected stores are owned by the caller).
+    if (knowledgeDeps && !options.knowledge) void knowledgeDeps.db.close().catch(() => {});
+    knowledgeDeps = undefined;
     return new Promise((resolve) => server.close(() => resolve()));
   }
 

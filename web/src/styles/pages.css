@@ -969,3 +969,15 @@
 @media (max-width: 1280px) { .cal-grid { grid-template-columns: 1fr; } .cal-side { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); } }
 .cal-chip, .cal-event { display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; }
 .cal-event { display: grid; }
+
+/* ------------------------------ Knowledge ------------------------------ */
+.kn-search { display: flex; gap: var(--s-2); margin-bottom: var(--s-3); }
+.kn-search input { flex: 1; min-width: 0; background: var(--bg-2); color: inherit; border: 1px solid var(--line-2); border-radius: var(--r-lg); padding: 6px 10px; font: inherit; }
+.kn-meta { font-size: var(--fs-sm); margin: 0 0 var(--s-2); }
+.kn-list { margin: 0; padding-left: 1.2em; display: grid; gap: var(--s-3); }
+.kn-title { font-weight: 600; }
+.kn-excerpt { font-size: var(--fs-sm); color: var(--text-2); margin: 2px 0; white-space: pre-wrap; }
+.kn-scores { font-size: var(--fs-xs); }
+.kn-recent { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: var(--fs-sm); }
+.kn-recent li { display: grid; gap: 1px; }
+.kn-recent .muted { font-size: var(--fs-xs); }

@@ -101,6 +101,10 @@ export function createHttpServices(base = '/api'): PacificServices {
     activity: {
       listActivity: (limit = 100) => getJson(`${base}/activity?limit=${limit}`, 'Activity'),
     },
+    knowledge: {
+      getStatus: () => getJson(`${base}/knowledge/status`, 'Knowledge status'),
+      search: (q) => getJson(`${base}/knowledge/search?q=${enc(q)}`, 'Knowledge search'),
+    },
     calendar: {
       getHub: ({ view, date, sourceIds }) =>
         getJson(

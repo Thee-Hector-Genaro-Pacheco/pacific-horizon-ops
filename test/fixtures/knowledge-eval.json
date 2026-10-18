@@ -1,0 +1,17 @@
+{
+  "description": "PHRO-AI-001 RAG evaluation. kind: answerable (expected document in top K and an answered, correctly cited reply), insufficient (related retrieval allowed; reply must be insufficient_evidence with no citations), unrelated (no qualifying retrieval and an insufficient_evidence reply).",
+  "k": 3,
+  "cases": [
+    { "question": "Do guests pay at sponsored events?", "kind": "answerable", "expectedDocuments": ["pacific-horizon-labs/photo-booth-operating-policy.md"] },
+    { "question": "What is our policy for sponsored photo booth events?", "kind": "answerable", "expectedDocuments": ["pacific-horizon-labs/photo-booth-operating-policy.md"] },
+    { "question": "What does our documentation say about digital delivery?", "kind": "answerable", "expectedDocuments": ["pacific-horizon-labs/digital-delivery-technical-notes.md", "pacific-horizon-labs/photo-booth-operating-policy.md"] },
+    { "question": "Is the deposit refundable?", "kind": "answerable", "expectedDocuments": ["pacific-horizon-labs/booking-and-deposit-policy.md"] },
+    { "question": "Which counties do we cover?", "kind": "answerable", "expectedDocuments": ["pacific-horizon-labs/company-overview.md"] },
+    { "question": "Does a download click mean the photo was saved?", "kind": "answerable", "expectedDocuments": ["pacific-horizon-labs/digital-delivery-technical-notes.md"] },
+    { "question": "What do we know about our event pricing policy?", "kind": "answerable", "expectedDocuments": ["pacific-horizon-labs/booking-and-deposit-policy.md", "pacific-horizon-labs/photo-booth-operating-policy.md"] },
+    { "question": "Can Pacific Ops send an email without owner approval?", "kind": "answerable", "expectedDocuments": ["pacific-horizon-labs/company-overview.md"] },
+    { "question": "Can Pacific Ops automatically sign a lease?", "kind": "insufficient" },
+    { "question": "Can Pacific Ops sign vendor contracts?", "kind": "insufficient" },
+    { "question": "What is the wifi password at the warehouse?", "kind": "unrelated" }
+  ]
+}

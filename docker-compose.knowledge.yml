@@ -1,0 +1,28 @@
+# PHRO knowledge store (PHRO-AI-001): local PostgreSQL + pgvector for development.
+# Not the Photo Booth Supabase database. Bound to localhost only.
+#
+#   PHRO_KNOWLEDGE_DB_PASSWORD=<choose one> docker compose -f docker-compose.knowledge.yml up -d
+#
+# Then set PHRO_KNOWLEDGE_DATABASE_URL in .env (never commit it):
+#   postgres://phro:<password>@127.0.0.1:5435/phro_knowledge
+services:
+  knowledge-db:
+    image: pgvector/pgvector:pg17
+    container_name: phro-knowledge-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: phro
+      POSTGRES_DB: phro_knowledge
+      POSTGRES_PASSWORD: ${PHRO_KNOWLEDGE_DB_PASSWORD:?Set PHRO_KNOWLEDGE_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:5435:5432"
+    volumes:
+      - phro-knowledge-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U phro -d phro_knowledge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  phro-knowledge-data:

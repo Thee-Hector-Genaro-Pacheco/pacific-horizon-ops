@@ -48,6 +48,7 @@ const TASK_BY_CONVERSATION: Record<VoiceConversationState, { task: string; opera
   PHOTO_BOOTH_ANALYTICS: { task: 'Photo Booth analytics', operation: 'photo_booth_analytics' },
   CALENDAR: { task: 'Checking calendar', operation: 'calendar_read' },
   EMAIL_READ: { task: 'Checking inboxes', operation: 'email_read' },
+  KNOWLEDGE: { task: 'Checking company knowledge', operation: 'knowledge_read' },
   COMPLETE: { task: 'Wrapping up', operation: 'wrap_up' },
 };
 

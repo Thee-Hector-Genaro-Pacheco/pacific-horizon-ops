@@ -559,6 +559,52 @@ Command Center → **Calendar** (`/calendar`, API `GET /api/calendar?view=today|
 
 ---
 
+## Knowledge Store / RAG (PHRO-AI-001)
+
+Pacific Ops can answer from stored company knowledge and say exactly which evidence it used. It is read-only: retrieval can never send, draft, approve, schedule or call tools.
+
+### Pipeline
+
+`knowledge/` files → normalize (NFC, LF, no control chars) → SHA-256 content hash → structure-aware chunking (headings → paragraphs → sentences, hard cap 1,200 chars, ~150-char overlap) → embeddings → PostgreSQL + pgvector → hybrid retrieval → evidence → grounded answer with citations.
+
+- **Database**: a dedicated local Postgres + pgvector (`docker-compose.knowledge.yml`, `pgvector/pgvector:pg17`, 127.0.0.1:5435; 5434 is left to EstateOS). Not the Photo Booth Supabase project. Tables: `organizations`, `knowledge_sources`, `knowledge_documents` (versioned; one active version per document), `knowledge_chunks` (text, metadata, `vector(768)`, generated `tsvector`), `ingestion_runs`, `knowledge_queries`. Every row carries `organization_id` and every query filters on it.
+- **Embeddings**: provider interface; default Ollama `nomic-embed-text` (768 dims, local, free, no npm dependency). `PHRO_EMBEDDINGS_PROVIDER=none` is an explicit lexical-only mode. There is no fake/random fallback outside tests.
+- **Retrieval**: Postgres full text (OR over stemmed query terms) ∪ pgvector cosine, fused with Reciprocal Rank Fusion. A chunk counts as evidence only if it covers at least half the query terms or clears the similarity floor (`PHRO_KNOWLEDGE_MIN_SIMILARITY`, default 0.55), so "no evidence" stays distinguishable from loosely related text. If the query cannot be embedded, results are lexical and flagged `degraded: embedding_unavailable`.
+- **Grounding**: `src/cognition/context.ts` assembles a `GroundedContext` (question, evidence, live context, constraints, notices). Evidence is entity-escaped inside `<evidence>` blocks and declared untrusted data; the model gets no tools; citations must reference supplied evidence IDs or the answer becomes "I don't have enough stored company knowledge to answer that yet." No evidence means no model call.
+- **Ingestion safety**: only `./knowledge` (plus `PHRO_KNOWLEDGE_ROOTS`) can be ingested; symlinks are not followed; `.env*`, `credentials*`, `token*`, `google-profiles.json`, keys/certs, database dumps, `.git`, `node_modules`, `data`, `dist`, `secrets` and similar are refused; documents containing credential-like strings are rejected. Ingestion is CLI-only; the dashboard API is read-only.
+
+### Setup
+
+```bash
+# 1. Database (Docker Desktop must be running)
+export PHRO_KNOWLEDGE_DB_PASSWORD='<choose a password>'
+npm run knowledge:db:up
+# add to .env (never commit):
+# PHRO_KNOWLEDGE_DATABASE_URL=postgres://phro:<password>@127.0.0.1:5435/phro_knowledge
+
+# 2. Local embeddings
+brew install ollama && ollama serve &   # or the Ollama app
+ollama pull nomic-embed-text
+
+# 3. Schema + seed knowledge
+npm run knowledge:migrate
+npm run knowledge:ingest -- knowledge/pacific-horizon-labs --source "Company handbook"
+```
+
+### Commands
+
+```bash
+npm run knowledge:status
+npm run knowledge:search -- "What is our photo booth policy?"
+npm run knowledge:ask -- "Do guests pay at sponsored events?"
+npm run knowledge:eval                     # retrieval hit@K against test/fixtures/knowledge-eval.json
+npm run knowledge:ingest -- knowledge/pacific-horizon-labs --lexical-only   # without Ollama
+```
+
+Voice: "What is our policy for sponsored photo booth events?", "What does our documentation say about digital delivery?" Answers start "According to stored company knowledge…" and name the source document. The Command Center **Knowledge** page shows store health, counts, the embedding model, the last ingestion, recent searches and a provenance-showing search.
+
+---
+
 ## Acceptance Criteria & Testing Verification
 
 1. **Authentication**: First run opens Google consent and creates `token.json`.

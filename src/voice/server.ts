@@ -33,6 +33,7 @@ import { PacificOpsRuntimeStore, estimatePlaybackMs } from '../runtime/pacificOp
 import { VoicePresenceReporter, observeExecutor, type ReporterOptions, type RuntimeSink } from './presenceReporter.js';
 import type { PhotoBoothVoiceDeps } from './analytics.js';
 import type { CalendarVoiceDeps } from './calendar.js';
+import type { KnowledgeVoiceDeps } from './knowledge.js';
 
 export interface VoiceServerOptions {
   port?: number;
@@ -61,6 +62,8 @@ export interface VoiceServerOptions {
   photoBooth?: PhotoBoothVoiceDeps;
   /** Read-only Google Calendar dependencies. Defaults to the business Google account. */
   calendar?: CalendarVoiceDeps;
+  /** Read-only company-knowledge dependencies. Defaults to PHRO_KNOWLEDGE_DATABASE_URL. */
+  knowledge?: KnowledgeVoiceDeps;
 }
 
 /**
@@ -457,6 +460,7 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
             draftCreator: options.draftCreator,
             photoBooth: options.photoBooth,
             calendar: options.calendar,
+            knowledge: options.knowledge,
             onProgress: (progressText, progressOpts) => {
               console.log(`[voice:server] [session:${sessionId}] Spoken progress: "${progressText}"`);
               voiceStore.appendTranscript(session.sessionId, {

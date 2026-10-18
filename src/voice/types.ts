@@ -21,6 +21,7 @@ export const VoiceConversationStateSchema = z.enum([
   'PHOTO_BOOTH_ANALYTICS',
   'CALENDAR',
   'EMAIL_READ',
+  'KNOWLEDGE',
   'COMPLETE',
 ]);
 export type VoiceConversationState = z.infer<typeof VoiceConversationStateSchema>;

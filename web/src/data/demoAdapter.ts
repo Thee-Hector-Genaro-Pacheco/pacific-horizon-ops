@@ -698,6 +698,32 @@ export function createDemoServices(latencyMs = 220): PacificServices {
     calendar: {
       getHub: ({ view, date, sourceIds }) => wait(() => demoCalendarHub(view, date ?? null, sourceIds)),
     },
+    // DEMO: sample diagnostics and one canned search result. Not real stored knowledge.
+    knowledge: {
+      getStatus: () =>
+        wait(() => ({
+          database: 'online' as const,
+          detail: 'Demo data',
+          organizationId: 'pacific-horizon-labs',
+          sources: 1,
+          documents: 4,
+          chunks: 19,
+          chunksWithVectors: 19,
+          embedding: { model: 'ollama:nomic-embed-text', dimension: 768 },
+          lastIngestion: { status: 'completed', startedAt: new Date(Date.now() - 3_600_000).toISOString(), completedAt: new Date(Date.now() - 3_590_000).toISOString(), documentsChanged: 4, documentsUnchanged: 0, chunksWritten: 19, errorCount: 0 },
+          recentQueries: [{ query: 'Do guests pay at sponsored events?', mode: 'hybrid', resultCount: 2, latencyMs: 41, at: new Date(Date.now() - 600_000).toISOString() }],
+        })),
+      search: (q) =>
+        wait(() => ({
+          query: q,
+          mode: 'hybrid' as const,
+          degraded: null,
+          latencyMs: 38,
+          results: [
+            { rank: 1, title: 'Photo Booth Operating Policy', section: 'Sponsored and promotional events', sourceLabel: 'Seed (demo)', excerpt: 'Sponsored and promotional events never charge the guest.', score: 1, coverage: 0.75, lexicalScore: 0.1, vectorScore: 0.71 },
+          ],
+        })),
+    },
     realtime: {
       subscribe({ onLinkState }) {
         onLinkState('demo');

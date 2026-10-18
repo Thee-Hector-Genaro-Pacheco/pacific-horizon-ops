@@ -66,6 +66,7 @@ export type ConversationStateDTO =
   | 'PHOTO_BOOTH_ANALYTICS'
   | 'CALENDAR'
   | 'EMAIL_READ'
+  | 'KNOWLEDGE'
   | 'COMPLETE';
 
 export type Tone = 'neutral' | 'info' | 'success' | 'attention' | 'failure';
@@ -319,7 +320,7 @@ export interface RuntimeStateDTO {
   state: PacificOpsState;
   sessionActive: boolean;
   sessionId: string | null;
-  operation: 'call' | 'mailbox_review' | 'message_review' | 'draft_review' | 'approval' | 'send_email' | 'photo_booth_analytics' | 'calendar_read' | 'email_read' | 'wrap_up' | null;
+  operation: 'call' | 'mailbox_review' | 'message_review' | 'draft_review' | 'approval' | 'send_email' | 'photo_booth_analytics' | 'calendar_read' | 'email_read' | 'knowledge_read' | 'wrap_up' | null;
   task: string | null;
   status: string;
   context: { senderName?: string; subject?: string } | null;
@@ -491,4 +492,50 @@ export interface CalendarHubDTO {
   availability: CalendarDayAvailabilityDTO[];
   /** Real scope of the most recent Pacific Ops Calendar question, if any recent one exists. */
   voice: CalendarVoiceScopeDTO | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Knowledge diagnostics (read-only; ingestion is CLI-only)             */
+/* ------------------------------------------------------------------ */
+
+export interface KnowledgeStatusDTO {
+  database: 'online' | 'offline' | 'not_configured';
+  detail: string | null;
+  organizationId: string;
+  sources: number;
+  documents: number;
+  chunks: number;
+  chunksWithVectors: number;
+  embedding: { model: string; dimension: number } | null;
+  lastIngestion: {
+    status: string;
+    startedAt: string;
+    completedAt: string | null;
+    documentsChanged: number;
+    documentsUnchanged: number;
+    chunksWritten: number;
+    errorCount: number;
+  } | null;
+  recentQueries: Array<{ query: string; mode: string; resultCount: number; latencyMs: number; at: string }>;
+}
+
+/** Search hit without internal database IDs. */
+export interface KnowledgeHitDTO {
+  rank: number;
+  title: string;
+  section: string | null;
+  sourceLabel: string;
+  excerpt: string;
+  score: number;
+  coverage: number;
+  lexicalScore: number;
+  vectorScore: number | null;
+}
+
+export interface KnowledgeSearchDTO {
+  query: string;
+  mode: 'hybrid' | 'lexical_only';
+  degraded: string | null;
+  latencyMs: number;
+  results: KnowledgeHitDTO[];
 }
