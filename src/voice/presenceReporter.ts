@@ -47,6 +47,7 @@ const TASK_BY_CONVERSATION: Record<VoiceConversationState, { task: string; opera
   AWAITING_REJECTION_CONFIRMATION: { task: 'Awaiting rejection confirmation', operation: 'approval' },
   PHOTO_BOOTH_ANALYTICS: { task: 'Photo Booth analytics', operation: 'photo_booth_analytics' },
   CALENDAR: { task: 'Checking calendar', operation: 'calendar_read' },
+  EMAIL_READ: { task: 'Checking inboxes', operation: 'email_read' },
   COMPLETE: { task: 'Wrapping up', operation: 'wrap_up' },
 };
 
@@ -190,6 +191,10 @@ export class VoicePresenceReporter {
       const session = sessionId ? this.voiceStore.getSession(sessionId) : null;
       const conv = session?.conversationState;
       const derived = conv ? TASK_BY_CONVERSATION[conv] : null;
+      // Read domains may carry a display-safe scope label, e.g. "Checking calendar · Business + Personal".
+      const scoped = session?.metadata?.readTaskLabel;
+      const scopedTask =
+        (conv === 'CALENDAR' || conv === 'EMAIL_READ') && typeof scoped === 'string' && scoped.length <= 80 ? scoped : null;
       const selected = session?.metadata?.selectedMessage as { senderName?: unknown; subject?: unknown } | null | undefined;
       this.sink.publish({
         state,
@@ -197,7 +202,7 @@ export class VoicePresenceReporter {
         sessionActive: over.sessionActive ?? sessionId !== null,
         source: over.source ?? 'voice',
         operation: over.operation !== undefined ? over.operation : (derived?.operation ?? null),
-        task: over.task !== undefined ? over.task : (derived?.task ?? null),
+        task: over.task !== undefined ? over.task : (scopedTask ?? derived?.task ?? null),
         status: over.status,
         context: selected ? { senderName: selected.senderName as string, subject: selected.subject as string } : null,
       });

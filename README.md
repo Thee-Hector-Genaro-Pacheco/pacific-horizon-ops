@@ -502,6 +502,63 @@ Calendar is a separate `CALENDAR` conversation state alongside the mailbox and `
 
 ---
 
+## Multiple Google Accounts (PHRO-GOOGLE-002)
+
+Pacific Ops can read Gmail and Calendar from more than one Google account. Only the business account can draft, approve or send.
+
+### Profile registry
+
+`business` is built in and unchanged: Gmail read/compose/modify + Calendar read, token `token.business.json`, expected account `PHRO_GMAIL_BUSINESS_ACCOUNT`. Other accounts are listed in a local, gitignored `google-profiles.json` (copy `google-profiles.example.json`):
+
+```json
+{
+  "profiles": [
+    { "id": "personal", "label": "Personal", "expectedAccount": "you@gmail.com", "oauthClient": "personal",
+      "calendarPrivacy": "busy_only", "calendars": [{ "id": "primary", "label": "Primary" }] }
+  ]
+}
+```
+
+- `id` names the token file (`token.<id>.json`); `oauthClient` names the OAuth client file (`credentials.<oauthClient>.json`). Personal Gmail accounts need the External client (`credentials.personal.json`), because the business client is Workspace-internal.
+- New profiles default to `["gmail.read", "calendar.read"]` and request only `gmail.readonly` + `calendar.readonly`. `gmail.write` is rejected for non-business profiles.
+- `expectedAccount` is required; sign-in with any other account fails closed. A token file alone never authorizes a profile: it must be registered and enabled.
+- `calendarPrivacy` / per-calendar `privacy`: `titles` (speak sanitized titles) or `busy_only` (use the time, say "<Label> event"). Availability always counts every selected calendar.
+
+### Connecting an account
+
+```bash
+npm run google:profiles               # registry, scopes, connection status (accounts masked, no tokens)
+npm run google:auth -- personal       # one profile at a time; backs up its own token first
+npm run google:profiles               # confirm "connected"
+```
+
+`google:auth` writes only that profile's token, refuses partial consent or a different account without touching the existing token, and reports a busy OAuth callback port (`lsof -i :3000`) instead of failing obscurely.
+
+### CLI
+
+```bash
+npm run calendar:today -- --profile personal
+npm run calendar:today -- --all
+npm run calendar:availability -- --all "Saturday from 5 to 10"
+npm run gmail:latest -- --profile personal
+npm run gmail:latest -- --all
+```
+
+Calendar commands default to `business` when no flag is given.
+
+### Voice
+
+- **Calendar**: questions default to **all enabled calendars**. "Check only my business calendar", "my personal calendar" narrow the scope, and follow-ups ("What about Saturday?") keep it until "check everything". Availability merges FreeBusy across the selected calendars; if any of them can't be checked, Pacific Ops says which and never says you're free.
+- **Inboxes**: "Check all my inboxes" / "Check my personal inbox" open a read-only inbox check (`EMAIL_READ`), merged by Gmail internal date with account labels. "Draft a response" there is refused ("That account is connected read-only…"). Plain "inbox"/"business inbox" phrasing keeps the existing business mailbox, which is the only place drafting and approval happen.
+- Shared invitations are de-duplicated only when they share an iCalUID and start time; identical titles/times alone are never merged.
+- Command Center task labels show the scope, e.g. "Checking calendar · Business + Personal".
+
+### Calendar Hub
+
+Command Center → **Calendar** (`/calendar`, API `GET /api/calendar?view=today|week|upcoming&sources=<sourceId,...>`): every connected calendar in one read-only view with per-account and per-calendar filters, source labels on every event ("Business · Primary"), conflict flags (including cross-account), 8 AM–10 PM availability per day, per-account connection status, and the scope of Pacific Ops' latest Calendar question. Free time is shown only when every selected calendar answered. No raw calendar IDs, event IDs, attendees, links or account emails are sent to the browser, and there are no create/edit/RSVP controls.
+
+---
+
 ## Acceptance Criteria & Testing Verification
 
 1. **Authentication**: First run opens Google consent and creates `token.json`.

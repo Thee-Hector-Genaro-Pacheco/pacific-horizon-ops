@@ -1,0 +1,22 @@
+{
+  "profiles": [
+    {
+      "id": "business",
+      "calendars": [
+        { "id": "primary", "label": "Primary" }
+      ]
+    },
+    {
+      "id": "personal",
+      "label": "Personal",
+      "expectedAccount": "you@gmail.com",
+      "oauthClient": "personal",
+      "capabilities": ["gmail.read", "calendar.read"],
+      "calendarPrivacy": "busy_only",
+      "calendars": [
+        { "id": "primary", "label": "Primary" }
+      ],
+      "enabled": true
+    }
+  ]
+}

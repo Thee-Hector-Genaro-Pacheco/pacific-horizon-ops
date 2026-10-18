@@ -10,3 +10,6 @@ credentials.*.json
 
 /supabase/.temp/
 /Claude outputs/
+
+# Local Google account registry (account emails; never commit)
+/google-profiles.json

@@ -15,6 +15,7 @@ import type {
   SystemHealthDTO,
   TimelineEventDTO,
 } from './contract';
+import type { CalendarHubDTO, CalendarHubView } from './contract';
 import { NotFoundError, type PacificServices } from './services';
 
 /**
@@ -694,6 +695,9 @@ export function createDemoServices(latencyMs = 220): PacificServices {
     activity: {
       listActivity: (limit = 100) => wait(() => data.activity.slice(0, limit)),
     },
+    calendar: {
+      getHub: ({ view, date, sourceIds }) => wait(() => demoCalendarHub(view, date ?? null, sourceIds)),
+    },
     realtime: {
       subscribe({ onLinkState }) {
         onLinkState('demo');
@@ -724,5 +728,162 @@ function demoRuntime(state: RuntimeStateDTO['state']): RuntimeStateDTO {
     at: null,
     settledBy: 'none',
     voiceGateway: 'unknown',
+  };
+}
+
+/**
+ * DEMO Calendar Hub: three sample calendars across two accounts, with a cross-account
+ * Saturday conflict, an all-day event, a multi-day event and a busy-only personal
+ * calendar. Clearly sample data, never real events. Times are in America/Los_Angeles.
+ */
+const DEMO_TZ = 'America/Los_Angeles';
+const DEMO_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const DEMO_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function demoKey(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+function demoAdd(key: string, n: number): string {
+  const [y, m, d] = key.split('-').map(Number);
+  return demoKey(new Date(Date.UTC(y, m - 1, d + n)));
+}
+function demoWeekday(key: string): number {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+/** Instant at local wall time in DEMO_TZ (offset-corrected, DST-safe). */
+function demoAt(key: string, h = 0, min = 0): string {
+  const [y, m, d] = key.split('-').map(Number);
+  const wall = Date.UTC(y, m - 1, d, h, min);
+  const offsetAt = (t: number) => {
+    const p: Record<string, string> = {};
+    for (const x of new Intl.DateTimeFormat('en-US', { timeZone: DEMO_TZ, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' }).formatToParts(new Date(t))) p[x.type] = x.value;
+    return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute) - t;
+  };
+  let t = wall - offsetAt(wall);
+  t = wall - offsetAt(t);
+  return new Date(t).toISOString();
+}
+
+function demoCalendarHub(view: CalendarHubView, date: string | null, sourceIds: string[] | null): CalendarHubDTO {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: DEMO_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const anchor = view === 'today' || view === 'upcoming' || !date ? today : date;
+  let days: string[];
+  let label: string;
+  let prev = anchor;
+  let next = anchor;
+  const [ay, am] = anchor.split('-').map(Number);
+  if (view === 'month') {
+    const first = `${ay}-${String(am).padStart(2, '0')}-01`;
+    const nextMonth = demoKey(new Date(Date.UTC(ay, am, 1)));
+    const last = demoAdd(nextMonth, -1);
+    const gridStart = demoAdd(first, -demoWeekday(first));
+    const gridEnd = demoAdd(last, 6 - demoWeekday(last));
+    days = [];
+    for (let k = gridStart; k <= gridEnd; k = demoAdd(k, 1)) days.push(k);
+    label = `${DEMO_MONTHS[am - 1]} ${ay}`;
+    prev = demoKey(new Date(Date.UTC(ay, am - 2, 1)));
+    next = nextMonth;
+  } else if (view === 'week') {
+    const sunday = demoAdd(anchor, -demoWeekday(anchor));
+    days = Array.from({ length: 7 }, (_, i) => demoAdd(sunday, i));
+    const [, sm, sd] = sunday.split('-').map(Number);
+    const [ey, em, ed] = days[6].split('-').map(Number);
+    label = sm === em ? `${DEMO_MONTHS[sm - 1]} ${sd}–${ed}, ${ey}` : `${DEMO_MONTHS[sm - 1].slice(0, 3)} ${sd} – ${DEMO_MONTHS[em - 1].slice(0, 3)} ${ed}, ${ey}`;
+    prev = demoAdd(anchor, -7);
+    next = demoAdd(anchor, 7);
+  } else if (view === 'day' || view === 'today') {
+    days = [anchor];
+    const [, , dd] = anchor.split('-').map(Number);
+    label = `${DEMO_DAYS[demoWeekday(anchor)]}, ${DEMO_MONTHS[am - 1]} ${dd}`;
+    prev = demoAdd(anchor, -1);
+    next = demoAdd(anchor, 1);
+  } else {
+    days = Array.from({ length: 7 }, (_, i) => demoAdd(today, i));
+    label = 'Upcoming';
+  }
+
+  const sources = [
+    { sourceId: 'business.0', profileId: 'business', profileLabel: 'Business', calendarLabel: 'Primary', label: 'Business · Primary', privacy: 'titles' as const },
+    { sourceId: 'business.1', profileId: 'business', profileLabel: 'Business', calendarLabel: 'Bookings', label: 'Business · Bookings', privacy: 'titles' as const },
+    { sourceId: 'personal.0', profileId: 'personal', profileLabel: 'Personal', calendarLabel: 'Primary', label: 'Personal · Primary', privacy: 'busy_only' as const },
+  ];
+  const chosen = sourceIds?.length ? sources.filter((s) => sourceIds.includes(s.sourceId)) : sources;
+  const saturday = demoAdd(today, (6 - demoWeekday(today) + 7) % 7 || 7);
+  const raw = [
+    { id: 'd1', title: 'Client walkthrough', src: 0, start: demoAt(demoAdd(today, 1), 10), end: demoAt(demoAdd(today, 1), 11) },
+    { id: 'd2', title: 'Personal event', src: 2, start: demoAt(demoAdd(today, 1), 14), end: demoAt(demoAdd(today, 1), 15) },
+    { id: 'd3', title: 'Garcia booth booking', src: 1, start: demoAt(saturday, 18), end: demoAt(saturday, 20) },
+    { id: 'd4', title: 'Personal event', src: 2, start: demoAt(saturday, 19), end: demoAt(saturday, 21) },
+    { id: 'd5', title: 'Equipment check', src: 0, start: demoAt(saturday, 16), end: demoAt(saturday, 17) },
+    { id: 'd6', title: 'Booth maintenance', src: 1, start: demoAt(demoAdd(today, 3)), end: demoAt(demoAdd(today, 4)), allDay: true },
+    { id: 'd7', title: 'Expo setup', src: 1, start: demoAt(demoAdd(today, 8), 9), end: demoAt(demoAdd(today, 10), 17) },
+    { id: 'd8', title: 'Team sync', src: 0, start: demoAt(today, 9), end: demoAt(today, 9, 30) },
+  ];
+  const rangeStart = view === 'upcoming' ? new Date().toISOString() : demoAt(days[0]);
+  const rangeEnd = view === 'upcoming' ? demoAt(demoAdd(today, 14)) : demoAt(demoAdd(days[days.length - 1], 1));
+  const visible = raw
+    .filter((e) => chosen.includes(sources[e.src]) && e.end > rangeStart && e.start < rangeEnd)
+    .sort((a, b) => a.start.localeCompare(b.start));
+  const overlapping = (a: (typeof raw)[number], b: (typeof raw)[number]) => a !== b && !a.allDay && !b.allDay && a.start < b.end && b.start < a.end;
+  const events = visible.map((e) => {
+    const src = sources[e.src];
+    const clashes = visible.filter((o) => overlapping(e, o));
+    return {
+      id: e.id,
+      title: e.title,
+      start: e.start,
+      end: e.end,
+      allDay: !!e.allDay,
+      busy: true,
+      sourceId: src.sourceId,
+      profileLabel: src.profileLabel,
+      calendarLabel: src.calendarLabel,
+      sourceLabel: src.label,
+      conflict: clashes.length > 0,
+      crossAccountConflict: clashes.some((o) => sources[o.src].profileId !== src.profileId),
+    };
+  });
+  const availability = days.map((d) => {
+    const ws = demoAt(d, 8);
+    const we = demoAt(d, 22);
+    const busy = visible
+      .filter((e) => e.end > ws && e.start < we)
+      .map((e) => ({ start: e.start < ws ? ws : e.start, end: e.end > we ? we : e.end }))
+      .sort((a, b) => a.start.localeCompare(b.start))
+      .reduce<Array<{ start: string; end: string }>>((acc, b) => {
+        const last = acc[acc.length - 1];
+        if (last && b.start <= last.end) last.end = b.end > last.end ? b.end : last.end;
+        else acc.push({ ...b });
+        return acc;
+      }, []);
+    const free: Array<{ start: string; end: string }> = [];
+    let cur = ws;
+    for (const b of busy) {
+      if (b.start > cur) free.push({ start: cur, end: b.start });
+      if (b.end > cur) cur = b.end;
+    }
+    if (we > cur) free.push({ start: cur, end: we });
+    return { date: d, window: { start: ws, end: we }, status: 'complete' as const, busy, free };
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    timeZone: DEMO_TZ,
+    view,
+    range: { start: rangeStart, end: rangeEnd, label },
+    nav: { anchor, today, prev, next },
+    days: days.map((d) => ({ date: d, weekday: demoWeekday(d), isToday: d === today, inPeriod: view !== 'month' || d.slice(0, 7) === anchor.slice(0, 7) })),
+    scope: { mode: sourceIds?.length ? 'filtered' : 'all', label: sourceIds?.length ? chosen.map((c) => c.label).join(' + ') : 'All calendars', sourceIds: chosen.map((c) => c.sourceId) },
+    status: 'complete',
+    failures: [],
+    profiles: [
+      { profileId: 'business', label: 'Business', sourceIds: ['business.0', 'business.1'], connection: 'connected' },
+      { profileId: 'personal', label: 'Personal', sourceIds: ['personal.0'], connection: 'connected' },
+    ],
+    sources: sources.map((s) => ({ ...s, selected: chosen.includes(s), status: chosen.includes(s) ? ('connected' as const) : null })),
+    events,
+    availability,
+    voice: null,
   };
 }

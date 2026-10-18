@@ -184,7 +184,9 @@ describe('Calendar voice domain', () => {
     assert.deepEqual(session.metadata?.availableMessages, messages, 'mailbox state preserved');
     const ctx = session.metadata?.calendar as { events: Array<Record<string, unknown>>; day: string };
     assert.equal(ctx.day, '2026-10-17');
-    for (const e of ctx.events) assert.deepEqual(Object.keys(e).sort(), ['allDay', 'end', 'start', 'title'], 'no IDs or raw payload in session');
+    for (const e of ctx.events) {
+      assert.deepEqual(Object.keys(e).sort(), ['allDay', 'calendarLabel', 'end', 'profileId', 'sourceLabel', 'start', 'title'], 'source identity only; no provider IDs or raw payload in session');
+    }
 
     const stored = fs.readFileSync(path.join(dir, 'voice-sessions.json'), 'utf-8') + fs.readFileSync(path.join(dir, 'voice-events.jsonl'), 'utf-8');
     for (const leak of ['jane@client.com', 'meet.google', 'gate code', 'evt_booth_1', 'attendees']) assert.ok(!stored.includes(leak), leak);

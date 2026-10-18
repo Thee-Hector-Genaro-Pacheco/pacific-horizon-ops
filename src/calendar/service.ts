@@ -171,6 +171,7 @@ export function toSafeEvent(raw: unknown, tz: string): SafeCalendarEvent | null 
     end: end.iso,
     allDay: start.allDay,
     busy: ev.transparency !== 'transparent',
+    ...(ev.iCalUID ? { iCalUID: ev.iCalUID } : {}),
   };
 }
 

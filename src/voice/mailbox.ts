@@ -13,6 +13,8 @@ export interface EligibleInboxMessage {
   internalDate: number;
   body: string;
   snippet?: string;
+  /** Google profile this message was read from. Absent means the business mailbox. */
+  profileId?: string;
 }
 
 /**

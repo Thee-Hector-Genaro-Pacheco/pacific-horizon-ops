@@ -9,6 +9,10 @@ import { loadSnapshot, snapshotFingerprint, DATA_FILES } from './sources.js';
 import { buildReadModel, type ReadModel } from './readModel.js';
 import type { ChangeEventDTO, Envelope, RuntimeStateDTO, SystemComponentDTO, SystemHealthDTO } from './types.js';
 import { readRuntimeState, resolveRuntimeState, RUNTIME_FILES, type ResolvedRuntimeState } from '../runtime/pacificOpsRuntime.js';
+import { buildCalendarHub, CalendarHubRequestError } from '../calendar/hub.js';
+import { calendarSourcesFromRegistry, type CalendarSource } from '../calendar/multi.js';
+import { parseLocalDate } from '../calendar/time.js';
+import type { CalendarHubView } from './types.js';
 
 // The DTO is the wire shape of the resolved runtime; keep them structurally identical.
 const _runtimeShape: (r: ResolvedRuntimeState) => RuntimeStateDTO = (r) => r;
@@ -33,6 +37,8 @@ export interface DashboardServerOptions {
   voiceHealthUrl?: string | null;
   now?: () => number;
   env?: NodeJS.ProcessEnv;
+  /** Read-only Calendar sources for the Calendar Hub. Defaults to the Google profile registry. */
+  calendarSources?: () => { sources: CalendarSource[]; timeZone: string };
 }
 
 const RECENT_SUCCESS_MS = 24 * 60 * 60 * 1000;
@@ -287,6 +293,11 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
     res.end(JSON.stringify({ error: what }));
   }
 
+  function badRequest(res: http.ServerResponse, message: string) {
+    res.writeHead(400, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: message }));
+  }
+
   async function handleApi(pathname: string, url: URL, res: http.ServerResponse, req: http.IncomingMessage) {
     const parts = pathname.replace(/^\/api\/?/, '').split('/').filter(Boolean);
     const [resource, id] = parts.map(decodeURIComponent);
@@ -325,6 +336,36 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
       }
       case 'analytics':
         return send(res, 200, m.analytics);
+      case 'calendar': {
+        const viewParam = url.searchParams.get('view') ?? 'today';
+        if (!['month', 'week', 'day', 'upcoming', 'today'].includes(viewParam)) return badRequest(res, 'view must be month, week, day, upcoming or today');
+        const dateParam = url.searchParams.get('date');
+        const anchor = dateParam ? parseLocalDate(dateParam) : null;
+        if (dateParam && !anchor) return badRequest(res, 'date must be YYYY-MM-DD');
+        const sourceIds = (url.searchParams.get('sources') ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+        let configured: { sources: CalendarSource[]; timeZone: string };
+        try {
+          configured = (options.calendarSources ?? (() => calendarSourcesFromRegistry('all', { env })))();
+        } catch (err) {
+          res.writeHead(503, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: `Calendar is not configured: ${err instanceof Error ? err.message : 'unknown error'}` }));
+          return;
+        }
+        try {
+          const hub = await buildCalendarHub({
+            ...configured,
+            now: new Date(now()),
+            view: viewParam as CalendarHubView,
+            anchor,
+            sourceIds,
+            sessions: loadSnapshot(dataDir).sessions,
+          });
+          return send(res, 200, hub);
+        } catch (err) {
+          if (err instanceof CalendarHubRequestError) return badRequest(res, err.message);
+          throw err;
+        }
+      }
       case 'runtime': {
         if (id === 'state') return send(res, 200, await runtimeNow());
         if (id !== 'events') return notFound(res);

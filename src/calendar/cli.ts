@@ -10,8 +10,8 @@ import {
   resolveCredentialPath,
   resolveTokenPath,
 } from '../auth.js';
-import { CalendarService } from './service.js';
-import { CalendarError, type SafeCalendarEvent } from './types.js';
+import { CalendarError } from './types.js';
+import { MultiCalendar, calendarSourcesFromRegistry, type AggregateMeta, type SourcedEvent } from './multi.js';
 import { addDays, localDateOf, resolveTimePhrase, zonedToUtc, type ResolvedWindow } from './time.js';
 import { describeAvailability, describeNextEvent, describeSchedule, spokenCalendarFailure } from './speech.js';
 
@@ -32,12 +32,16 @@ Commands:
                 npm run calendar:availability -- 2026-10-24T17:00 2026-10-24T22:00
                 npm run calendar:availability -- "Saturday from 5 to 10"
 
+  Source flags (all commands): --profile <id> (repeatable) or --all. Default: business.
+                npm run calendar:today -- --all
+                npm run calendar:availability -- --all "Saturday from 5 to 10"
+
 Configuration: PHRO_TIMEZONE (default America/Los_Angeles), PHRO_CALENDAR_ID (default primary).
 Tokens are never printed. No command can create, change or delete Calendar events.
 `);
 }
 
-function eventLine(ev: SafeCalendarEvent, tz: string): string {
+function eventLine(ev: SourcedEvent, tz: string): string {
   const fmt = (iso: string, withTime: boolean) =>
     new Date(iso).toLocaleString('en-US', {
       timeZone: tz,
@@ -47,7 +51,25 @@ function eventLine(ev: SafeCalendarEvent, tz: string): string {
       ...(withTime ? { hour: 'numeric', minute: '2-digit' } : {}),
     });
   const when = ev.allDay ? `${fmt(ev.start, false)} (all day)` : `${fmt(ev.start, true)} - ${fmt(ev.end, true)}`;
-  return `  ${when.padEnd(44)} ${ev.title}${ev.busy ? '' : '  [shown as free]'}`;
+  return `  ${when.padEnd(44)} ${ev.title}  [${ev.sourceLabel} · ${ev.calendarLabel}]${ev.busy ? '' : '  [shown as free]'}`;
+}
+
+function printMeta(meta: AggregateMeta): void {
+  for (const f of meta.failed) console.log(`  ! ${f.label}: not checked (${f.kind})`);
+  if (meta.status !== 'complete') console.log(`  Result status: ${meta.status.toUpperCase()}`);
+}
+
+/** --profile <id> (repeatable) / --all; strips the flags from args. Default: business. */
+function parseSelection(args: string[]): { selection: string[] | 'all'; rest: string[] } {
+  const rest: string[] = [];
+  const ids: string[] = [];
+  let all = false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--all') all = true;
+    else if (args[i] === '--profile') ids.push(args[++i]);
+    else rest.push(args[i]);
+  }
+  return { selection: all ? 'all' : ids.length ? ids : ['business'], rest };
 }
 
 async function handleAuth(): Promise<void> {
@@ -87,11 +109,13 @@ async function main(): Promise<void> {
   if (!command || ['help', '--help', '-h'].includes(command)) return printHelp();
   if (command === 'auth') return handleAuth();
 
-  const service = await CalendarService.fromBusinessAuth();
-  const tz = service.timeZone;
+  const parsed = parseSelection(rest);
+  rest.splice(0, rest.length, ...parsed.rest);
+  const { sources, timeZone: tz } = calendarSourcesFromRegistry(parsed.selection);
+  const multi = new MultiCalendar(sources, tz);
   const now = new Date();
   const today = localDateOf(now, tz);
-  console.log(`\nTimezone: ${tz} · Calendar: ${service.config.calendarId}`);
+  console.log(`\nTimezone: ${tz} · Calendars: ${sources.map((s) => `${s.label} · ${s.calendarLabel}`).join(', ')}`);
 
   switch (command) {
     case 'today':
@@ -104,14 +128,18 @@ async function main(): Promise<void> {
         day: command === 'today' ? today : null,
         hasTimeOfDay: false,
       };
-      const events = await service.listEvents(window.start, window.end);
+      const { events, meta } = await multi.listEvents(window.start, window.end);
       for (const ev of events) console.log(eventLine(ev, tz));
+      printMeta(meta);
+      if (meta.status === 'failed') throw new CalendarError((meta.failed[0]?.kind ?? 'upstream_error') as never, 'No selected calendar could be read.');
       console.log(`\nSpoken: ${describeSchedule(events, window, tz, now)}\n`);
       return;
     }
     case 'next': {
-      const ev = await service.nextEvent(now);
+      const { event: ev, meta } = await multi.nextEvent(now);
       if (ev) console.log(eventLine(ev, tz));
+      printMeta(meta);
+      if (meta.status === 'failed') throw new CalendarError((meta.failed[0]?.kind ?? 'upstream_error') as never, 'No selected calendar could be read.');
       console.log(`\nSpoken: ${describeNextEvent(ev, tz, now)}\n`);
       return;
     }
@@ -131,10 +159,16 @@ async function main(): Promise<void> {
         window = resolveTimePhrase(rest.join(' '), now, tz);
       }
       if (!window || window.end <= window.start) throw new Error('Give a start and end (ISO local times) or a phrase like "Saturday from 5 to 10".');
-      const result = await service.availability(window.start, window.end);
+      const { result, meta } = await multi.availability(window.start, window.end);
+      printMeta(meta);
+      if (!result) throw new CalendarError((meta.failed[0]?.kind ?? 'upstream_error') as never, 'No selected calendar could be read.');
       for (const b of result.busy) console.log(`  busy  ${b.start} - ${b.end}`);
-      for (const f of result.free) console.log(`  free  ${f.start} - ${f.end}`);
-      console.log(`\nSpoken: ${describeAvailability(result, window, tz, now)}\n`);
+      if (meta.status === 'complete') {
+        for (const f of result.free) console.log(`  free  ${f.start} - ${f.end}`);
+        console.log(`\nSpoken: ${describeAvailability(result, window, tz, now)}\n`);
+      } else {
+        console.log('\nFree time NOT confirmed: not every selected calendar could be checked.\n');
+      }
       return;
     }
     default:

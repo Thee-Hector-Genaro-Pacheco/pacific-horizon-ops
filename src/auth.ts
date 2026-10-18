@@ -138,9 +138,16 @@ export function resolveTokenPath(profileInput?: string, baseDir: string = proces
 /** Read-only Calendar access. Covers events.list, events.get and freebusy.query; grants no writes. */
 export const CALENDAR_READONLY_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
 
+export const GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
+export const GMAIL_COMPOSE_SCOPE = 'https://www.googleapis.com/auth/gmail.compose';
+
+/**
+ * The business profile's full scope set (Gmail read/compose/modify + Calendar read).
+ * Other profiles request only their own capability bundle (see src/google/profiles.ts).
+ */
 export const SCOPES = [
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.compose',
+  GMAIL_READONLY_SCOPE,
+  GMAIL_COMPOSE_SCOPE,
   'https://www.googleapis.com/auth/gmail.modify',
   CALENDAR_READONLY_SCOPE,
 ];
@@ -167,8 +174,12 @@ export function hasScope(auth: OAuth2Client, requiredScope: string): boolean {
  * Google's consent screen lets the owner untick individual scopes. Throws (before any
  * token is written) if a new consent would silently lose Gmail access or lack Calendar read.
  */
-export function assertConsentGrantedAllScopes(grantedScope: string | null | undefined, targetTokenPath: string): void {
-  const notGranted = missingScopes(grantedScope);
+export function assertConsentGrantedAllScopes(
+  grantedScope: string | null | undefined,
+  targetTokenPath: string,
+  required: readonly string[] = SCOPES
+): void {
+  const notGranted = missingScopes(grantedScope, required);
   if (notGranted.length > 0) {
     throw new Error(
       `Consent did not grant all required scopes (missing: ${notGranted.join(', ')}). ` +
@@ -316,10 +327,10 @@ export async function verifyProfileAccountBinding(
 /**
  * Generates the OAuth authorization URL forcing account selection and consent.
  */
-export function generateAuthorizationUrl(oauth2Client: OAuth2Client): string {
+export function generateAuthorizationUrl(oauth2Client: OAuth2Client, scopes: readonly string[] = SCOPES): string {
   return oauth2Client.generateAuthUrl({
     access_type: 'offline',
-    scope: SCOPES,
+    scope: [...scopes],
     prompt: 'select_account consent',
   });
 }
@@ -327,13 +338,36 @@ export function generateAuthorizationUrl(oauth2Client: OAuth2Client): string {
 /**
  * Starts a temporary local loopback server to capture OAuth authorization code
  */
+export interface LoopbackAuthOptions {
+  /** Scopes to request and require. Defaults to the business SCOPES. */
+  scopes?: readonly string[];
+  /** Expected account for this profile. Defaults to the legacy PHRO_GMAIL_<PROFILE>_ACCOUNT lookup. */
+  expectedAccount?: string | null;
+  /** How to read the signed-in account's email. Defaults to the Gmail profile. */
+  resolveIdentity?: (client: OAuth2Client) => Promise<string>;
+}
+
+/** Human-readable message for a loopback server failure (notably a busy callback port). */
+export function describeLoopbackError(err: unknown, port: number): Error {
+  const code = (err as { code?: string })?.code;
+  if (code === 'EADDRINUSE') {
+    return new Error(
+      `OAuth callback port ${port} is already in use. Close whatever is using it (often a previous auth run or a dev server: \`lsof -i :${port}\`) and try again. No token was changed.`
+    );
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
 export async function authenticateViaLoopback(
   oauth2Client: OAuth2Client,
   port: number,
   targetTokenPath: string,
-  profile: GmailProfile,
-  onValidated?: () => void
+  profile: string,
+  onValidated?: () => void,
+  options: LoopbackAuthOptions = {}
 ): Promise<void> {
+  const scopes = options.scopes ?? SCOPES;
+  const resolveIdentity = options.resolveIdentity ?? getAuthenticatedEmail;
   return new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
       try {
@@ -367,9 +401,14 @@ export async function authenticateViaLoopback(
           oauth2Client.setCredentials(tokens);
 
           // Verify authenticated identity against configured expected account BEFORE persisting!
-          const expected = getExpectedAccount(profile);
+          const expected =
+            options.expectedAccount !== undefined
+              ? options.expectedAccount ?? undefined
+              : (VALID_PROFILES as readonly string[]).includes(profile)
+                ? getExpectedAccount(profile as GmailProfile)
+                : undefined;
           if (expected) {
-            const authenticatedEmail = await getAuthenticatedEmail(oauth2Client);
+            const authenticatedEmail = (await resolveIdentity(oauth2Client)).trim().toLowerCase();
             if (authenticatedEmail.toLowerCase() !== expected.toLowerCase()) {
               throw new Error(
                 `Authenticated Gmail account does not match the configured account for profile ${profile}.`
@@ -382,7 +421,7 @@ export async function authenticateViaLoopback(
             );
           }
 
-          assertConsentGrantedAllScopes(tokens.scope, targetTokenPath);
+          assertConsentGrantedAllScopes(tokens.scope, targetTokenPath, scopes);
 
           if (onValidated) {
             onValidated();
@@ -399,7 +438,7 @@ export async function authenticateViaLoopback(
     });
 
     server.listen(port, () => {
-      const authUrl = generateAuthorizationUrl(oauth2Client);
+      const authUrl = generateAuthorizationUrl(oauth2Client, scopes);
 
       console.log(`\n--- Gmail Authorization for Profile: "${profile}" ---`);
       console.log('Opening your browser for OAuth consent...');
@@ -420,7 +459,7 @@ export async function authenticateViaLoopback(
     });
 
     server.on('error', (err) => {
-      reject(err);
+      reject(describeLoopbackError(err, port));
     });
   });
 }

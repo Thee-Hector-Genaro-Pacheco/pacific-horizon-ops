@@ -34,6 +34,19 @@ import {
   type CalendarVoiceContext,
   type CalendarVoiceDeps,
 } from './calendar.js';
+import {
+  EMAIL_MAILBOX_COMMAND_GUIDANCE,
+  EMAIL_PROGRESS_TEXT,
+  EMAIL_READ_HELP,
+  READ_ONLY_DRAFT_TEXT,
+  answerEmailQuestion,
+  draftRefusalFor,
+  emailProfiles,
+  isDraftCommand,
+  isEmailReadRequest,
+  type EmailVoiceContext,
+  type EmailVoiceDeps,
+} from './email.js';
 
 export interface ConversationTurnResult {
   responseText: string;
@@ -144,6 +157,8 @@ export async function handleVoiceUtterance(params: {
   photoBooth?: PhotoBoothVoiceDeps;
   /** Read-only Google Calendar dependencies (mocked in tests). */
   calendar?: CalendarVoiceDeps;
+  /** Read-only multi-inbox dependencies (mocked in tests). */
+  email?: EmailVoiceDeps;
   draftCreator?: (params: {
     to: string;
     subject: string;
@@ -172,11 +187,13 @@ export async function handleVoiceUtterance(params: {
     onProgress: params.onProgress,
     photoBooth: params.photoBooth,
     calendar: params.calendar,
+    email: params.email,
   };
-  if (session.conversationState === 'PHOTO_BOOTH_ANALYTICS' || session.conversationState === 'CALENDAR') {
+  if (READ_DOMAIN_STATES.has(session.conversationState)) {
     return handleReadDomainTurn(domain);
   }
   if (!ANALYTICS_BLOCKED_STATES.has(session.conversationState)) {
+    if (isEmailReadRequest(normalizeUtterance(utterance), emailProfiles(params.email))) return askEmail(domain);
     const route = routeReadDomain(normalizeUtterance(utterance));
     if (route === 'calendar') return askCalendar(domain);
     if (route === 'photo_booth') return askPhotoBooth(domain);
@@ -463,6 +480,16 @@ export async function handleVoiceUtterance(params: {
           reason: 'Draft refused for automated noise message',
         });
         return { responseText, endCall: false };
+      }
+
+      // Only the business account drafts. A message from another profile is never drafted
+      // here, so it can never bind to a business draft or Action.
+      if (selectedMessage.profileId && selectedMessage.profileId !== 'business') {
+        voiceStore.updateConversationState(session.sessionId, 'READY', {
+          lastSpokenText: READ_ONLY_DRAFT_TEXT,
+          reason: `Draft refused: message belongs to read-only profile ${selectedMessage.profileId}`,
+        });
+        return { responseText: READ_ONLY_DRAFT_TEXT, endCall: false };
       }
 
       // One open approval lifecycle per email: reuse it rather than creating a second Gmail draft.
@@ -1012,7 +1039,7 @@ function photoBoothContext(session: VoiceSession): PhotoBoothVoiceContext | null
 }
 
 /** Read-only domains Pacific Ops can switch between without losing mailbox state. */
-const READ_DOMAIN_STATES = new Set<VoiceConversationState>(['PHOTO_BOOTH_ANALYTICS', 'CALENDAR']);
+const READ_DOMAIN_STATES = new Set<VoiceConversationState>(['PHOTO_BOOTH_ANALYTICS', 'CALENDAR', 'EMAIL_READ']);
 
 interface DomainTurnArgs {
   session: VoiceSession;
@@ -1022,6 +1049,7 @@ interface DomainTurnArgs {
   onProgress?: (text: string, opts?: { stillWorking?: boolean }) => void;
   photoBooth?: PhotoBoothVoiceDeps;
   calendar?: CalendarVoiceDeps;
+  email?: EmailVoiceDeps;
 }
 
 /** Enter (or stay in) a read domain. The mailbox resume point is saved only when leaving the mailbox. */
@@ -1075,13 +1103,40 @@ async function askCalendar(args: DomainTurnArgs): Promise<ConversationTurnResult
 
   const previous = calendarContext(session);
   const result = await answerCalendarQuestion(utterance, previous, args.calendar);
-  if (result.ok && result.context) {
-    voiceStore.updateSessionMetadata(session.sessionId, { calendar: result.context });
-  }
+  // Display-safe scope for the Command Center (profile labels only).
+  voiceStore.updateSessionMetadata(session.sessionId, {
+    readTaskLabel: `Checking calendar · ${result.scopeLabel}`,
+    ...(result.ok && result.context ? { calendar: result.context } : {}),
+  });
   const audit = `Calendar ${result.outcome} (reads: ${result.calls.join(', ') || 'none'})`;
   console.log(`[voice:calendar] [session:${session.sessionId}] ${audit}`);
   voiceStore.updateConversationState(session.sessionId, 'CALENDAR', { lastSpokenText: result.text, reason: audit });
   return { responseText: result.text, endCall: false };
+}
+
+/** Read-only inbox check across profiles. Never drafts and never touches the action store. */
+async function askEmail(args: DomainTurnArgs): Promise<ConversationTurnResult> {
+  const { session, utterance, voiceStore } = args;
+  const entering = session.conversationState !== 'EMAIL_READ';
+  enterReadDomain(session, voiceStore, 'EMAIL_READ', entering ? 'Switched to inbox check' : 'Inbox check follow-up');
+  const previous = emailContext(session);
+  if (!/\b(first|second|third|1st|2nd|3rd|last)\b/.test(normalizeUtterance(utterance)) || !previous) {
+    args.onProgress?.(EMAIL_PROGRESS_TEXT, { stillWorking: true });
+  }
+  const result = await answerEmailQuestion(utterance, previous, args.email);
+  voiceStore.updateSessionMetadata(session.sessionId, {
+    ...(result.scopeLabel ? { readTaskLabel: `Checking inboxes · ${result.scopeLabel}` } : {}),
+    ...(result.ok && result.context ? { inboxRead: result.context } : {}),
+  });
+  const audit = `Inbox check ${result.outcome} (accounts read: ${result.reads})`;
+  console.log(`[voice:email] [session:${session.sessionId}] ${audit}`);
+  voiceStore.updateConversationState(session.sessionId, 'EMAIL_READ', { lastSpokenText: result.text, reason: audit });
+  return { responseText: result.text, endCall: false };
+}
+
+function emailContext(session: VoiceSession): EmailVoiceContext | null {
+  const ctx = session.metadata?.inboxRead as EmailVoiceContext | null | undefined;
+  return ctx && typeof ctx === 'object' ? ctx : null;
 }
 
 function calendarContext(session: VoiceSession): CalendarVoiceContext | null {
@@ -1094,6 +1149,8 @@ async function handleReadDomainTurn(args: DomainTurnArgs): Promise<ConversationT
   const { session, voiceStore } = args;
   const current = session.conversationState;
   const isCalendar = current === 'CALENDAR';
+  const isEmail = current === 'EMAIL_READ';
+  const domainName = isEmail ? 'inbox check' : isCalendar ? 'Calendar' : 'Photo Booth analytics';
   const norm = normalizeUtterance(args.utterance);
   const stay = (responseText: string, reason?: string): ConversationTurnResult => {
     voiceStore.updateConversationState(session.sessionId, current, { lastSpokenText: responseText, reason });
@@ -1111,25 +1168,36 @@ async function handleReadDomainTurn(args: DomainTurnArgs): Promise<ConversationT
     return stay(session.lastSpokenText, 'Repeated last response at owner request');
   }
 
+  // Multi-inbox requests ("check my personal inbox", "all my inboxes") before the
+  // business-mailbox return, which also matches inbox phrasing.
+  if (isEmailReadRequest(norm, emailProfiles(args.email))) return askEmail(args);
+
   if (isReturnToInboxRequest(norm)) {
-    return returnToMailbox(session, voiceStore, args.actionStore, isCalendar ? 'Calendar' : 'Photo Booth analytics');
+    return returnToMailbox(session, voiceStore, args.actionStore, domainName);
   }
 
   if (norm === 'help' || norm.includes('options') || norm.includes('what can i say')) {
-    return stay(isCalendar ? CALENDAR_VOICE_HELP : PHOTO_BOOTH_VOICE_HELP);
+    return stay(isEmail ? EMAIL_READ_HELP : isCalendar ? CALENDAR_VOICE_HELP : PHOTO_BOOTH_VOICE_HELP);
+  }
+
+  // Drafting is never done from a read-only check, and never silently from another account.
+  if (isEmail && isDraftCommand(norm)) {
+    return stay(draftRefusalFor(emailContext(session)), 'Draft refused in read-only inbox check');
   }
 
   if (isMailboxActionCommand(norm)) {
     return stay(
-      isCalendar ? CALENDAR_MAILBOX_COMMAND_GUIDANCE : PHOTO_BOOTH_MAILBOX_COMMAND_GUIDANCE,
-      `Mailbox command refused while in ${isCalendar ? 'Calendar' : 'Photo Booth analytics'}`
+      isEmail ? EMAIL_MAILBOX_COMMAND_GUIDANCE : isCalendar ? CALENDAR_MAILBOX_COMMAND_GUIDANCE : PHOTO_BOOTH_MAILBOX_COMMAND_GUIDANCE,
+      `Mailbox command refused while in ${domainName}`
     );
   }
 
-  // Explicit questions for the other read domain switch; anything else is a follow-up here.
+  // Explicit questions for another read domain switch; anything else is a follow-up here.
   const route = routeReadDomain(norm);
-  if (isCalendar) return route === 'photo_booth' ? askPhotoBooth(args) : askCalendar(args);
-  return route === 'calendar' ? askCalendar(args) : askPhotoBooth(args);
+  if (route === 'calendar' && !isCalendar) return askCalendar(args);
+  if (route === 'photo_booth' && current !== 'PHOTO_BOOTH_ANALYTICS') return askPhotoBooth(args);
+  if (isEmail) return askEmail(args);
+  return isCalendar ? askCalendar(args) : askPhotoBooth(args);
 }
 
 function returnToMailbox(session: VoiceSession, voiceStore: VoiceStore, actionStore: ActionStore, from: string): ConversationTurnResult {

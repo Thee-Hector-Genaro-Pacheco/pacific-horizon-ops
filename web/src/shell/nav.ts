@@ -1,4 +1,4 @@
-import { Activity, ChartColumn, Inbox, PhoneCall, Radar, Settings, ShieldCheck, Target, UsersRound, type LucideIcon } from 'lucide-react';
+import { Activity, CalendarDays, ChartColumn, Inbox, PhoneCall, Radar, Settings, ShieldCheck, Target, UsersRound, type LucideIcon } from 'lucide-react';
 
 export type NavCountKey = 'approvals' | 'inbox';
 
@@ -18,6 +18,7 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/inbox', label: 'Inbox', icon: Inbox, group: 'Operations', count: 'inbox', primaryMobile: true },
   { to: '/approvals', label: 'Approvals', icon: ShieldCheck, group: 'Operations', count: 'approvals', primaryMobile: true },
   { to: '/calls', label: 'Calls', icon: PhoneCall, group: 'Operations', primaryMobile: true },
+  { to: '/calendar', label: 'Calendar', icon: CalendarDays, group: 'Operations' },
   { to: '/leads', label: 'Leads', icon: Target, group: 'Relationships' },
   { to: '/customers', label: 'Customers', icon: UsersRound, group: 'Relationships' },
   { to: '/activity', label: 'Activity', icon: Activity, group: 'Intelligence' },

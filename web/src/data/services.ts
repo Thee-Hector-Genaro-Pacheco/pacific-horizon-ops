@@ -2,6 +2,8 @@ import type {
   ActionDTO,
   ActivityDTO,
   AnalyticsDTO,
+  CalendarHubDTO,
+  CalendarHubView,
   CallDTO,
   ChangeEventDTO,
   CommandCenterDTO,
@@ -49,6 +51,11 @@ export interface LeadService {
   getCustomer(id: string): Promise<CustomerDTO>;
 }
 
+/** Read-only multi-account Calendar Hub. There is deliberately no create/update/delete. */
+export interface CalendarHubService {
+  getHub(query: { view: CalendarHubView; date?: string | null; sourceIds: string[] | null }): Promise<CalendarHubDTO>;
+}
+
 export interface ActivityService {
   listActivity(limit?: number): Promise<ActivityDTO[]>;
 }
@@ -85,6 +92,7 @@ export interface PacificServices {
   calls: CallService;
   leads: LeadService;
   activity: ActivityService;
+  calendar: CalendarHubService;
   realtime: RealtimeService;
   /** Observational Pacific Ops runtime (voice state). Read-only, like everything here. */
   runtime: RuntimeService;

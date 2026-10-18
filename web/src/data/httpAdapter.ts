@@ -101,6 +101,13 @@ export function createHttpServices(base = '/api'): PacificServices {
     activity: {
       listActivity: (limit = 100) => getJson(`${base}/activity?limit=${limit}`, 'Activity'),
     },
+    calendar: {
+      getHub: ({ view, date, sourceIds }) =>
+        getJson(
+          `${base}/calendar?view=${enc(view)}${date ? `&date=${enc(date)}` : ''}${sourceIds?.length ? `&sources=${enc(sourceIds.join(','))}` : ''}`,
+          'Calendar'
+        ),
+    },
     realtime: createSseRealtime(`${base}/stream`),
     runtime: createSseRuntime(base),
   };

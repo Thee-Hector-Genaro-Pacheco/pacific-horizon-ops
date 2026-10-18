@@ -65,6 +65,7 @@ export type ConversationStateDTO =
   | 'AWAITING_REJECTION_CONFIRMATION'
   | 'PHOTO_BOOTH_ANALYTICS'
   | 'CALENDAR'
+  | 'EMAIL_READ'
   | 'COMPLETE';
 
 export type Tone = 'neutral' | 'info' | 'success' | 'attention' | 'failure';
@@ -318,7 +319,7 @@ export interface RuntimeStateDTO {
   state: PacificOpsState;
   sessionActive: boolean;
   sessionId: string | null;
-  operation: 'call' | 'mailbox_review' | 'message_review' | 'draft_review' | 'approval' | 'send_email' | 'photo_booth_analytics' | 'calendar_read' | 'wrap_up' | null;
+  operation: 'call' | 'mailbox_review' | 'message_review' | 'draft_review' | 'approval' | 'send_email' | 'photo_booth_analytics' | 'calendar_read' | 'email_read' | 'wrap_up' | null;
   task: string | null;
   status: string;
   context: { senderName?: string; subject?: string } | null;
@@ -373,4 +374,121 @@ export interface AnalyticsDTO {
 export interface ChangeEventDTO {
   at: string;
   topics: Array<'actions' | 'calls' | 'inbox' | 'activity'>;
+}
+
+/* ------------------------------------------------------------------ */
+/* Calendar Hub (read-only, multi-account)                              */
+/* ------------------------------------------------------------------ */
+
+/** `today` is kept as an alias of `day` anchored on today. */
+export type CalendarHubView = 'month' | 'week' | 'day' | 'upcoming' | 'today';
+
+/** One calendar cell/column in the business timezone. */
+export interface CalendarDayDTO {
+  /** YYYY-MM-DD */
+  date: string;
+  /** 0 = Sunday */
+  weekday: number;
+  isToday: boolean;
+  /** False for month-grid padding days from the previous/next month. */
+  inPeriod: boolean;
+}
+
+/** Server-computed navigation in the business timezone (YYYY-MM-DD anchors). */
+export interface CalendarNavDTO {
+  anchor: string;
+  today: string;
+  prev: string;
+  next: string;
+}
+export type CalendarAggregateStatus = 'complete' | 'partial' | 'failed' | 'no_sources';
+export type CalendarConnectionDTO = 'connected' | 'not_connected' | 'missing_scope' | 'unauthorized' | 'error';
+
+/** One readable calendar. `sourceId` is opaque ("<profile>.<n>"); Google Calendar IDs never leave the server. */
+export interface CalendarSourceDTO {
+  sourceId: string;
+  profileId: string;
+  profileLabel: string;
+  calendarLabel: string;
+  /** "Business · Primary" */
+  label: string;
+  privacy: 'titles' | 'busy_only';
+  selected: boolean;
+  /** null when not part of the current selection (not queried). */
+  status: CalendarConnectionDTO | null;
+}
+
+export interface CalendarProfileDTO {
+  profileId: string;
+  label: string;
+  sourceIds: string[];
+  /** Worst status across this profile's queried calendars; null if none were queried. */
+  connection: CalendarConnectionDTO | null;
+}
+
+/** Privacy-safe event. `id` is an opaque hash of {profileId, calendarId, eventId}. */
+export interface CalendarEventDTO {
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  busy: boolean;
+  sourceId: string;
+  profileLabel: string;
+  calendarLabel: string;
+  sourceLabel: string;
+  /** Overlaps another busy event in the current selection. */
+  conflict: boolean;
+  /** At least one overlapping event comes from a different account. */
+  crossAccountConflict: boolean;
+}
+
+export interface CalendarIntervalDTO {
+  start: string;
+  end: string;
+}
+
+export interface CalendarDayAvailabilityDTO {
+  /** YYYY-MM-DD in the business timezone. */
+  date: string;
+  /** Owner day window used for free/busy (8 AM to 10 PM local). */
+  window: CalendarIntervalDTO;
+  status: 'complete' | 'partial' | 'failed';
+  /** Busy time on the calendars that answered. */
+  busy: CalendarIntervalDTO[];
+  /** Only when every selected calendar answered; null otherwise (never claim free on partial data). */
+  free: CalendarIntervalDTO[] | null;
+}
+
+export interface CalendarVoiceScopeDTO {
+  /** "All calendars", "Business", "Business + Personal". */
+  scopeLabel: string;
+  /** Profile IDs the voice question covered (null = all). */
+  profileIds: string[] | null;
+  /** "tomorrow", "Saturday", ... or null. */
+  dayLabel: string | null;
+  windowStart: string;
+  windowEnd: string;
+  at: string;
+}
+
+export interface CalendarHubDTO {
+  generatedAt: string;
+  timeZone: string;
+  view: CalendarHubView;
+  /** e.g. "October 2026", "October 18–24, 2026", "Sunday, October 18". */
+  range: CalendarIntervalDTO & { label: string };
+  nav: CalendarNavDTO;
+  /** Visible days: month grid (whole weeks, Sunday first), week (Sun–Sat), day, or upcoming days. */
+  days: CalendarDayDTO[];
+  scope: { mode: 'all' | 'filtered'; label: string; sourceIds: string[] };
+  status: CalendarAggregateStatus;
+  failures: Array<{ label: string; kind: string }>;
+  profiles: CalendarProfileDTO[];
+  sources: CalendarSourceDTO[];
+  events: CalendarEventDTO[];
+  availability: CalendarDayAvailabilityDTO[];
+  /** Real scope of the most recent Pacific Ops Calendar question, if any recent one exists. */
+  voice: CalendarVoiceScopeDTO | null;
 }

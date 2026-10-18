@@ -1,5 +1,7 @@
-import { CalendarService } from '../calendar/service.js';
-import { CalendarError, type SafeCalendarEvent } from '../calendar/types.js';
+import type { CalendarService } from '../calendar/service.js';
+import { CalendarError } from '../calendar/types.js';
+import { MultiCalendar, calendarSourcesFromRegistry, singleCalendar, type AggregateMeta, type CalendarSource, type SourcedEvent } from '../calendar/multi.js';
+import { conflictWindows } from '../calendar/conflicts.js';
 import {
   addDays,
   formatLocalDate,
@@ -13,11 +15,14 @@ import {
 } from '../calendar/time.js';
 import {
   describeAvailability,
+  describeBusyOnly,
+  describeConflicts,
   describeEventAt,
   describeFirstEvent,
   describeNextEvent,
   describeOpenTimes,
   describeSchedule,
+  joinLabels,
   spokenCalendarFailure,
 } from '../calendar/speech.js';
 import { isPhotoBoothAnalyticsRequest } from './analytics.js';
@@ -29,19 +34,26 @@ import { isPhotoBoothAnalyticsRequest } from './analytics.js';
  */
 
 export interface CalendarVoiceDeps {
-  /** Defaults to CalendarService.fromBusinessAuth() at question time. */
+  /** Every calendar source Pacific Ops may read. Defaults to the Google profile registry. */
+  sources?: CalendarSource[];
+  timeZone?: string;
+  /** Legacy single-calendar injection (wrapped as one business source). */
   service?: CalendarService;
   now?: () => Date;
 }
 
-/** Minimal per-session Calendar context: the last window and its safe event summaries. No raw payloads. */
+/** Profiles a Calendar question covers: every enabled calendar, or specific profile IDs. */
+export type CalendarSelection = 'all' | string[];
+
+/** Minimal per-session Calendar context: scope, last window and safe event summaries. No raw payloads or IDs. */
 export interface CalendarVoiceContext {
+  selection: CalendarSelection;
   windowStart: string;
   windowEnd: string;
   label: string;
   /** YYYY-MM-DD when the last window was a single day. */
   day: string | null;
-  events: Array<Pick<SafeCalendarEvent, 'title' | 'start' | 'end' | 'allDay'>> | null;
+  events: Array<Pick<SourcedEvent, 'profileId' | 'sourceLabel' | 'calendarLabel' | 'title' | 'start' | 'end' | 'allDay'>> | null;
   /** Index of the event the owner last asked about ("the second one"). */
   focusIndex: number | null;
 }
@@ -76,7 +88,13 @@ const CALENDAR_PATTERNS: RegExp[] = [
   /\b(?:next|first|upcoming) (?:event|appointment|booking|meeting|thing)s?\b/,
   /\bwhat'?s next\b/,
   /\bmy day\b/,
+  /\bconflict(?:s|ing)?\b/,
+  /\bdouble[- ]?book(?:ed|ing)?\b/,
+  /\boverlap(?:s|ping)?\b/,
 ];
+
+/** Conflict questions: "any conflicts", "double booked", "do my events overlap", "clashes". */
+export const CONFLICT_INTENT = /\b(?:conflict(?:s|ing)?|double[- ]?book(?:ed|ing)?|overlap(?:s|ping)?|clash(?:es|ing)?)\b/;
 
 /** Analytics-specific vocabulary that outranks Calendar words ("how did the booth event perform"). */
 const STRONG_ANALYTICS =
@@ -106,16 +124,50 @@ export function routeReadDomain(norm: string): 'calendar' | 'photo_booth' | null
 export interface CalendarVoiceResult {
   text: string;
   ok: boolean;
-  /** Updated context to persist, when the answer succeeded. */
+  /** Updated context to persist, when the answer succeeded (fully or partially). */
   context: CalendarVoiceContext | null;
-  /** Service reads performed, for the audit trail (method names only). */
+  /** Reads performed, for the audit trail (method names only). */
   calls: string[];
   outcome: string;
+  /** Display-safe scope label, e.g. "All calendars" or "Business + Personal". */
+  scopeLabel: string;
 }
 
 const ORDINAL_WORDS: Record<string, number> = {
   first: 0, '1st': 0, second: 1, '2nd': 1, third: 2, '3rd': 2, fourth: 3, '4th': 3, fifth: 4, '5th': 4,
 };
+
+const GENERIC_CALENDAR_WORDS = new Set(['my', 'the', 'a', 'your', 'all', 'whole', 'entire', 'google', 'every', 'each', 'other', 'both', 'which', 'what', 'shared', 'only', 'check', 'on', 'in']);
+
+/**
+ * Which profiles an utterance names. "all my calendars", "across everything" -> all;
+ * "<label> calendar" / "only my <label> calendar" -> those profiles; unknown "<word> calendar" -> unknown.
+ */
+export function parseCalendarSelection(
+  norm: string,
+  profiles: Array<{ id: string; label: string }>
+): CalendarSelection | { unknown: string } | null {
+  if (/\b(?:all|every|both)\b(?: of)?(?: my| the)? (?:calendars?|accounts?)\b|\bacross (?:all|every|everything|my calendars|all my calendars)\b|\beverything\b|\ball of them\b/.test(norm)) {
+    return 'all';
+  }
+  const named = profiles.filter((p) =>
+    new RegExp(`\\b(?:${escapeRe(p.id)}|${escapeRe(p.label.toLowerCase())}) (?:calendars?|schedule|account)\\b`).test(norm)
+  );
+  if (named.length > 0) return named.map((p) => p.id);
+  const other = /\b([a-z]+) calendars?\b/.exec(norm);
+  if (other && !GENERIC_CALENDAR_WORDS.has(other[1])) return { unknown: other[1] };
+  return null;
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function partialNote(meta: AggregateMeta, what: string): string {
+  if (meta.status !== 'partial') return '';
+  const failed = meta.failed.map((f) => f.label.toLowerCase());
+  return ` I couldn't check your ${joinLabels(failed)} calendar${failed.length > 1 ? 's' : ''}, so ${what}.`;
+}
 
 /** Answers one Calendar question. Never throws; failures are spoken as failures, never as availability. */
 export async function answerCalendarQuestion(
@@ -124,37 +176,75 @@ export async function answerCalendarQuestion(
   deps: CalendarVoiceDeps = {}
 ): Promise<CalendarVoiceResult> {
   const calls: string[] = [];
-  const fail = (kind: string): CalendarVoiceResult => ({ text: spokenCalendarFailure(kind), ok: false, context: null, calls, outcome: kind });
+  let scopeLabel = 'Calendar';
+  const fail = (kind: string): CalendarVoiceResult => ({ text: spokenCalendarFailure(kind), ok: false, context: null, calls, outcome: kind, scopeLabel });
 
-  let service: CalendarService;
+  let all: CalendarSource[];
+  let tz: string;
   try {
-    service = deps.service ?? (await CalendarService.fromBusinessAuth());
+    if (deps.service) {
+      const single = singleCalendar(deps.service);
+      all = single.sources;
+      tz = single.timeZone;
+    } else if (deps.sources) {
+      all = deps.sources;
+      tz = deps.timeZone ?? 'America/Los_Angeles';
+    } else {
+      const built = calendarSourcesFromRegistry('all');
+      all = built.sources;
+      tz = built.timeZone;
+    }
   } catch (err) {
-    return fail(err instanceof CalendarError ? err.kind : 'unauthorized');
+    return fail(err instanceof CalendarError ? err.kind : 'config');
   }
+  if (all.length === 0) return fail('config');
+
+  const profiles = [...new Map(all.map((s) => [s.profileId, { id: s.profileId, label: s.label }])).values()];
+  const text = normalizeTimeText(utterance);
+  const parsed = parseCalendarSelection(text, profiles);
+  if (parsed && typeof parsed === 'object' && 'unknown' in parsed) {
+    return {
+      text: `I don't have a ${parsed.unknown} calendar connected. I can check ${joinLabels(profiles.map((p) => p.label.toLowerCase()))}.`,
+      ok: true,
+      context,
+      calls,
+      outcome: 'unknown_calendar',
+      scopeLabel,
+    };
+  }
+  const selection: CalendarSelection = (parsed as CalendarSelection | null) ?? context?.selection ?? 'all';
+  const selected = selection === 'all' ? all : all.filter((s) => selection.includes(s.profileId));
+  if (selected.length === 0) return fail('config');
+  const multi = new MultiCalendar(selected, tz);
+  const selectedProfiles = multi.labels;
+  scopeLabel = selection === 'all' && profiles.length > 1 ? 'All calendars' : selectedProfiles.join(' + ');
+  // Explicitly narrowed answers name their scope: "On your personal calendar, ...".
+  const scoped = (t: string) =>
+    selection !== 'all' && profiles.length > 1 ? `On your ${joinLabels(selectedProfiles.map((l) => l.toLowerCase()))} calendar${selectedProfiles.length > 1 ? 's' : ''}, ${t.charAt(0).toLowerCase()}${t.slice(1)}` : t;
 
   const now = (deps.now ?? (() => new Date()))();
-  const tz = service.timeZone;
-  const text = normalizeTimeText(utterance);
   const contextDay = context?.day ? parseLocalDate(context.day) : null;
   const contextWindow: ResolvedWindow | null = context
     ? { start: new Date(context.windowStart), end: new Date(context.windowEnd), label: context.label, day: contextDay, hasTimeOfDay: false }
     : null;
   const phrase = resolveTimePhrase(utterance, now, tz, contextDay);
 
-  const remember = (window: ResolvedWindow, events: SafeCalendarEvent[] | null, focusIndex: number | null = null): CalendarVoiceContext => ({
+  const remember = (window: ResolvedWindow, events: SourcedEvent[] | null, focusIndex: number | null = null): CalendarVoiceContext => ({
+    selection,
     windowStart: window.start.toISOString(),
     windowEnd: window.end.toISOString(),
     label: window.label,
     day: window.day ? formatLocalDate(window.day) : null,
-    events: events ? events.slice(0, MAX_CONTEXT_EVENTS).map(({ title, start, end, allDay }) => ({ title, start, end, allDay })) : null,
+    events: events
+      ? events.slice(0, MAX_CONTEXT_EVENTS).map(({ profileId, sourceLabel, calendarLabel, title, start, end, allDay }) => ({ profileId, sourceLabel, calendarLabel, title, start, end, allDay }))
+      : null,
     focusIndex,
   });
-  const ok = (t: string, ctx: CalendarVoiceContext, outcome: string): CalendarVoiceResult => ({ text: t, ok: true, context: ctx, calls, outcome });
-  const list = async (window: ResolvedWindow) => {
-    calls.push('listEvents');
-    return service.listEvents(window.start, window.end);
-  };
+  const ok = (t: string, ctx: CalendarVoiceContext, outcome: string): CalendarVoiceResult => ({ text: t, ok: true, context: ctx, calls, outcome, scopeLabel });
+  const failedAll = (m: AggregateMeta): CalendarVoiceResult =>
+    m.failed.length === 1
+      ? fail(m.failed[0].kind)
+      : { text: `I couldn't check any of your calendars right now.`, ok: false, context: null, calls, outcome: 'all_failed', scopeLabel };
   const dayWindow = (day: LocalDate, label: string): ResolvedWindow => ({
     start: zonedToUtc(tz, day),
     end: zonedToUtc(tz, addDays(day, 1)),
@@ -162,14 +252,40 @@ export async function answerCalendarQuestion(
     day,
     hasTimeOfDay: false,
   });
+  const list = async (window: ResolvedWindow) => {
+    calls.push('listEvents');
+    return multi.listEvents(window.start, window.end);
+  };
 
   try {
+    // Scheduling conflicts: only the overlapping intervals, from the shared conflict semantics.
+    if (CONFLICT_INTENT.test(text)) {
+      const window = phrase ?? contextWindow ?? dayWindow(localDateOf(now, tz), 'today');
+      const { events, meta } = await list(window);
+      if (meta.status === 'failed') return failedAll(meta);
+      const windows = conflictWindows(events).map((w) => ({ start: w.start, end: w.end, eventLabels: w.events.map((e) => e.sourceLabel) }));
+      let answer: string;
+      if (meta.status === 'partial') {
+        const failed = joinLabels(meta.failed.map((f) => f.label.toLowerCase()));
+        const plural = meta.failed.length > 1 ? 'calendars' : 'calendar';
+        answer =
+          windows.length === 0
+            ? `I didn't find a conflict in the calendars I could check, but I couldn't verify your ${failed} ${plural}.`
+            : `${describeConflicts(windows, window, tz, now)} I couldn't verify your ${failed} ${plural}, so there may be more.`;
+      } else {
+        answer = describeConflicts(windows, window, tz, now);
+      }
+      return ok(scoped(answer), remember(window, events), `conflicts:${meta.status}:${windows.length}`);
+    }
+
     // Next event.
     if (/\b(?:next (?:event|appointment|booking|meeting|thing)|what'?s next|whats next)\b/.test(text)) {
       calls.push('nextEvent');
-      const ev = await service.nextEvent(now);
-      const window = dayWindow(localDateOf(ev ? new Date(ev.start) : now, tz), '');
-      return ok(describeNextEvent(ev, tz, now), remember(window, ev ? [ev as SafeCalendarEvent] : [], ev ? 0 : null), 'next_event');
+      const { event, meta } = await multi.nextEvent(now);
+      if (meta.status === 'failed') return failedAll(meta);
+      const window = dayWindow(localDateOf(event ? new Date(event.start) : now, tz), '');
+      const answer = describeNextEvent(event, tz, now) + partialNote(meta, 'there may be something sooner');
+      return ok(scoped(answer), remember(window, event ? [event] : [], event ? 0 : null), `next_event:${meta.status}`);
     }
 
     // "Am I free after that?" / "before that": anchored on the event last discussed.
@@ -182,15 +298,13 @@ export async function answerCalendarQuestion(
         return ok(relative[1] === 'after' ? 'That event runs to the end of the day.' : 'That event starts at the beginning of the day.', context, 'relative_empty');
       }
       const window: ResolvedWindow = { start, end, label: context.label, day: contextDay, hasTimeOfDay: true };
-      calls.push('availability');
-      const result = await service.availability(start, end);
-      return ok(describeAvailability(result, window, tz, now), { ...context }, 'availability_relative');
+      return answerAvailability(window, { ...context, selection });
     }
 
     // "What time is the second one?": answered from context, no Google call.
     const ordinal = /\b(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th|last)\b/.exec(text);
     const asksAboutOne = /\b(?:one|event|appointment|booking|meeting|time|when|start)\b/.test(text);
-    if (ordinal && asksAboutOne && !phrase && context?.events) {
+    if (ordinal && asksAboutOne && !phrase && !parsed && context?.events) {
       const idx = ordinal[1] === 'last' ? context.events.length - 1 : ORDINAL_WORDS[ordinal[1]];
       const events = context.events.map((e) => ({ ...e, id: '', busy: true }));
       return ok(describeEventAt(events, idx, tz), { ...context, focusIndex: idx < events.length ? idx : context.focusIndex }, 'event_at');
@@ -202,20 +316,18 @@ export async function answerCalendarQuestion(
     // First event of a day.
     if (/\bfirst (?:event|appointment|booking|meeting|thing)\b/.test(text)) {
       const window = phrase ?? contextWindow ?? dayWindow(localDateOf(now, tz), 'today');
-      const events = await list(window);
-      return ok(describeFirstEvent(events, window, tz, now), remember(window, events, events.length ? 0 : null), 'first_event');
+      const { events, meta } = await list(window);
+      if (meta.status === 'failed') return failedAll(meta);
+      return ok(scoped(describeFirstEvent(events, window, tz, now) + partialNote(meta, 'there may be something earlier')), remember(window, events, events.length ? 0 : null), `first_event:${meta.status}`);
     }
 
     // Availability.
     if (/\b(?:free|available|availability|open|busy)\b/.test(text)) {
-      if (phrase?.hasTimeOfDay) {
-        calls.push('availability');
-        const result = await service.availability(phrase.start, phrase.end);
-        return ok(describeAvailability(result, phrase, tz, now), remember(phrase, null), 'availability');
-      }
+      if (phrase?.hasTimeOfDay) return answerAvailability(phrase, remember(phrase, null));
       const base = phrase ?? contextWindow ?? dayWindow(localDateOf(now, tz), 'today');
       const days = daysIn(base, tz).slice(0, 7);
       const answers: string[] = [];
+      let worst: AggregateMeta | null = null;
       for (const day of days) {
         const window = days.length === 1 ? { ...base, day } : dayWindow(day, '');
         let searchStart = zonedToUtc(tz, day, OPEN_TIME_DAY_START_HOUR);
@@ -223,23 +335,53 @@ export async function answerCalendarQuestion(
         if (searchStart < now) searchStart = now;
         if (searchEnd <= searchStart) continue;
         calls.push('availability');
-        const result = await service.availability(searchStart, searchEnd);
+        const { result, meta } = await multi.availability(searchStart, searchEnd);
+        if (meta.status === 'failed' || !result) return failedAll(meta);
+        if (meta.status === 'partial') worst = meta;
         const free = result.free.filter((g) => Date.parse(g.end) - Date.parse(g.start) >= 30 * 60_000);
         answers.push(describeOpenTimes(free, window, searchStart, searchEnd, tz, now));
       }
-      const textOut = answers.length > 0 ? answers.join(' ') : `There's no time left to check ${base.label || 'today'}.`;
-      return ok(textOut, remember(base, null), 'open_times');
+      const body = answers.length > 0 ? answers.join(' ') : `There's no time left to check ${base.label || 'today'}.`;
+      const note = worst ? partialNote(worst, "some of that time may not actually be free") : '';
+      return ok(scoped(body + note), remember(base, null), `open_times:${worst ? 'partial' : 'complete'}`);
     }
 
     // Schedule (optionally only bookings).
     const window = phrase ?? contextWindow ?? dayWindow(localDateOf(now, tz), 'today');
-    const events = await list(window);
+    const { events, meta } = await list(window);
+    if (meta.status === 'failed') return failedAll(meta);
     const bookingsOnly = /\b(?:bookings?|booked|photo ?booth)\b/.test(text);
-    return ok(describeSchedule(events, window, tz, now, { bookingsOnly }), remember(window, events), bookingsOnly ? 'bookings' : 'schedule');
+    const answer = describeSchedule(events, window, tz, now, { bookingsOnly }) + partialNote(meta, 'this may be incomplete');
+    return ok(scoped(answer), remember(window, events), `${bookingsOnly ? 'bookings' : 'schedule'}:${meta.status}`);
   } catch (err) {
     if (err instanceof CalendarError) return fail(err.kind);
     console.warn(`[voice:calendar] Calendar read failed (${err instanceof Error ? err.name : 'unknown'}).`);
     return fail('internal');
+  }
+
+  /** Explicit-window availability across the selected calendars, never claiming "free" on partial data. */
+  async function answerAvailability(window: ResolvedWindow, ctx: CalendarVoiceContext): Promise<CalendarVoiceResult> {
+    calls.push('availability');
+    const { result, meta } = await multi.availability(window.start, window.end);
+    if (meta.status === 'failed' || !result) return failedAll(meta);
+    if (meta.status === 'complete') {
+      return ok(scoped(describeAvailability(result, window, tz, now)), ctx, 'availability:complete');
+    }
+    const checked = joinLabels(meta.checked.map((l) => l.toLowerCase()));
+    const failed = joinLabels(meta.failed.map((f) => f.label.toLowerCase()));
+    const plural = (n: number) => (n > 1 ? 'calendars' : 'calendar');
+    if (result.isFree) {
+      return ok(
+        `I could verify your ${checked} ${plural(meta.checked.length)}, but I couldn't check your ${failed} ${plural(meta.failed.length)}, so I can't confirm you're completely free.`,
+        ctx,
+        'availability:partial'
+      );
+    }
+    return ok(
+      `${describeBusyOnly(result, window, tz, now)} on the calendars I could check. I couldn't check your ${failed} ${plural(meta.failed.length)}, so I can't confirm the rest of that time is free.`,
+      ctx,
+      'availability:partial'
+    );
   }
 }
 

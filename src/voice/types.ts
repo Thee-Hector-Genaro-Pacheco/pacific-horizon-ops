@@ -20,6 +20,7 @@ export const VoiceConversationStateSchema = z.enum([
   'AWAITING_REJECTION_CONFIRMATION',
   'PHOTO_BOOTH_ANALYTICS',
   'CALENDAR',
+  'EMAIL_READ',
   'COMPLETE',
 ]);
 export type VoiceConversationState = z.infer<typeof VoiceConversationStateSchema>;

@@ -17,6 +17,8 @@ export interface SafeCalendarEvent {
   allDay: boolean;
   /** False for events marked "Show as: Free" (transparent). */
   busy: boolean;
+  /** iCalendar UID shared by copies of the same invitation across calendars. Internal only; used for de-duplication. */
+  iCalUID?: string;
 }
 
 export interface TimeInterval {
@@ -62,6 +64,7 @@ const EventTimeSchema = z.object({
 
 export const RawEventSchema = z.object({
   id: z.string(),
+  iCalUID: z.string().optional().nullable(),
   status: z.string().optional().nullable(),
   summary: z.string().optional().nullable(),
   start: EventTimeSchema.optional().nullable(),
