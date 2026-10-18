@@ -18,6 +18,7 @@ export const VoiceConversationStateSchema = z.enum([
   'READING_DRAFT',
   'AWAITING_APPROVAL_CONFIRMATION',
   'AWAITING_REJECTION_CONFIRMATION',
+  'PHOTO_BOOTH_ANALYTICS',
   'COMPLETE',
 ]);
 export type VoiceConversationState = z.infer<typeof VoiceConversationStateSchema>;

@@ -8,7 +8,7 @@ import {
   findSemanticViolations,
   type SemanticViolation,
 } from './semantics.js';
-import type { EventSummary } from './types.js';
+import type { EventSummary, PhotoBoothErrorKind } from './types.js';
 
 /** Minimal surface of the Anthropic client the agent uses, so tests can inject a fake. */
 export interface MessagesClient {
@@ -22,6 +22,16 @@ export interface PhotoBoothAgentOptions {
   anthropic?: MessagesClient;
   model?: string;
   maxToolRounds?: number;
+  /** 'voice' asks for a short answer suitable for text-to-speech. Defaults to 'text'. */
+  channel?: 'text' | 'voice';
+  /** Prior exchange in the same conversation, so follow-ups like "how many downloads?" stay on the same event. */
+  conversation?: PhotoBoothConversationContext;
+}
+
+export interface PhotoBoothConversationContext {
+  eventId?: string | null;
+  previousQuestion?: string | null;
+  previousAnswer?: string | null;
 }
 
 export interface PhotoBoothToolCallRecord {
@@ -29,6 +39,7 @@ export interface PhotoBoothToolCallRecord {
   input: unknown;
   ok: boolean;
   cached: boolean;
+  errorKind?: PhotoBoothErrorKind | 'unknown_tool' | 'internal';
 }
 
 export interface PhotoBoothAnswer {
@@ -37,6 +48,8 @@ export interface PhotoBoothAnswer {
   /** How the final text was produced. */
   source: 'model' | 'model_revised' | 'deterministic_fallback';
   semanticViolations: SemanticViolation[];
+  /** Event the answer was about (last single-event tool result), or null if none was resolved. */
+  eventId: string | null;
 }
 
 export const PHOTO_BOOTH_SYSTEM_PROMPT = `You are Pacific Rising Ops, the operations agent for Pacific Horizon Labs, a photo booth rental business.
@@ -56,7 +69,22 @@ ${PHOTO_BOOTH_DATASET_RULES}
 
 Answer style: plain text, no markdown headers or tables. Lead with the direct answer, use the exact numbers from the tools, keep it to a short paragraph or two, and mention at most one or two operational items worth reviewing (for example unfinalized sessions). Refer to the event by its UUID only when needed for clarity.`;
 
+export const PHOTO_BOOTH_VOICE_STYLE = `This answer will be spoken aloud on a phone call. Use two to four short sentences. Lead with the direct answer and its key numbers and mention at most one operational caveat. Do not read event UUIDs unless the owner asks for the ID, and never read raw ISO timestamps (say "on October 10" only if timing matters). No lists, markdown, JSON, tool names, or implementation details.`;
+
 const DEFAULT_MAX_TOOL_ROUNDS = 6;
+
+function buildMessages(question: string, conversation: PhotoBoothConversationContext | undefined): Anthropic.MessageParam[] {
+  const messages: Anthropic.MessageParam[] = [];
+  if (conversation?.previousQuestion && conversation.previousAnswer) {
+    messages.push({ role: 'user', content: conversation.previousQuestion });
+    messages.push({ role: 'assistant', content: conversation.previousAnswer });
+  }
+  const note = conversation?.eventId
+    ? `\n\n(Conversation context: the event under discussion is ${conversation.eventId}. Use it for follow-up questions unless the owner asks about the latest event or a different event.)`
+    : '';
+  messages.push({ role: 'user', content: `${question}${note}` });
+  return messages;
+}
 
 /**
  * Answers a natural-language Photo Booth question with an Anthropic tool-use loop
@@ -70,17 +98,20 @@ export async function answerPhotoBoothQuestion(
   const model = options.model ?? process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5';
   const maxRounds = options.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
 
-  const messages: Anthropic.MessageParam[] = [{ role: 'user', content: question }];
+  const voice = options.channel === 'voice';
+  const system = voice ? `${PHOTO_BOOTH_SYSTEM_PROMPT}\n\n${PHOTO_BOOTH_VOICE_STYLE}` : PHOTO_BOOTH_SYSTEM_PROMPT;
+  const messages = buildMessages(question, options.conversation);
   const toolCalls: PhotoBoothToolCallRecord[] = [];
   const cache = new Map<string, PhotoBoothToolResult>();
   let lastSummary: EventSummary | null = null;
+  let eventId: string | null = null;
 
   const run = async (): Promise<string> => {
     for (let round = 0; round <= maxRounds; round++) {
       const response = await anthropic.messages.create({
         model,
         max_tokens: 1200,
-        system: PHOTO_BOOTH_SYSTEM_PROMPT,
+        system,
         tools: PHOTO_BOOTH_TOOLS,
         messages,
       });
@@ -102,10 +133,20 @@ export async function answerPhotoBoothQuestion(
         const cached = cache.get(key);
         const result = cached ?? (await executePhotoBoothTool(use.name, use.input, options.analytics));
         if (!cached && result.ok) cache.set(key, result);
-        toolCalls.push({ name: use.name, input: use.input, ok: result.ok, cached: Boolean(cached) });
+        toolCalls.push({
+          name: use.name,
+          input: use.input,
+          ok: result.ok,
+          cached: Boolean(cached),
+          ...(result.ok ? {} : { errorKind: result.error.kind }),
+        });
 
         if (result.ok && result.tool === 'get_photo_booth_event_summary') {
           lastSummary = result.data as EventSummary;
+        }
+        if (result.ok && result.tool !== 'compare_photo_booth_events') {
+          const id = (result.data as { eventId?: unknown }).eventId;
+          if (typeof id === 'string') eventId = id;
         }
         results.push({
           type: 'tool_result',
@@ -122,7 +163,7 @@ export async function answerPhotoBoothQuestion(
   const first = await run();
   const firstViolations = findSemanticViolations(first);
   if (firstViolations.length === 0) {
-    return { answer: first, toolCalls, source: 'model', semanticViolations: [] };
+    return { answer: first, toolCalls, source: 'model', semanticViolations: [], eventId };
   }
 
   console.warn(`[photobooth] Answer flagged for ${firstViolations.map((v) => v.rule).join(', ')}; requesting revision.`);
@@ -135,20 +176,21 @@ export async function answerPhotoBoothQuestion(
   const revised = await run();
   const revisedViolations = findSemanticViolations(revised);
   if (revisedViolations.length === 0) {
-    return { answer: revised, toolCalls, source: 'model_revised', semanticViolations: firstViolations };
+    return { answer: revised, toolCalls, source: 'model_revised', semanticViolations: firstViolations, eventId };
   }
 
   const summary = lastSummary as EventSummary | null;
   if (summary) {
     return {
-      answer: describeEventSummary(summary),
+      answer: describeEventSummary(summary, { spoken: voice }),
       toolCalls,
       source: 'deterministic_fallback',
       semanticViolations: revisedViolations,
+      eventId,
     };
   }
   // No summary to fall back on; return the revision but surface the violations to the caller.
-  return { answer: revised, toolCalls, source: 'model_revised', semanticViolations: revisedViolations };
+  return { answer: revised, toolCalls, source: 'model_revised', semanticViolations: revisedViolations, eventId };
 }
 
 function createAnthropicClient(): MessagesClient {

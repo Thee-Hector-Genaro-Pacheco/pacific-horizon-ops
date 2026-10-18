@@ -39,6 +39,7 @@ export type RuntimeOperation =
   | 'draft_review'
   | 'approval'
   | 'send_email'
+  | 'photo_booth_analytics'
   | 'wrap_up';
 
 /** Display-safe context. Sender display name and subject only: no addresses, bodies or IDs. */

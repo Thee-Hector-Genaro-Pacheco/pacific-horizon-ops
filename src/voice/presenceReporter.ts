@@ -45,6 +45,7 @@ const TASK_BY_CONVERSATION: Record<VoiceConversationState, { task: string; opera
   READING_DRAFT: { task: 'Reviewing draft reply', operation: 'draft_review' },
   AWAITING_APPROVAL_CONFIRMATION: { task: 'Awaiting approval confirmation', operation: 'approval' },
   AWAITING_REJECTION_CONFIRMATION: { task: 'Awaiting rejection confirmation', operation: 'approval' },
+  PHOTO_BOOTH_ANALYTICS: { task: 'Photo Booth analytics', operation: 'photo_booth_analytics' },
   COMPLETE: { task: 'Wrapping up', operation: 'wrap_up' },
 };
 
@@ -76,8 +77,12 @@ export class VoicePresenceReporter {
     this.emit(sessionId, 'idle', { status: 'Voice session connected', task: 'Connecting call', operation: 'call' });
   }
 
-  /** Pacific Ops sent text to ConversationRelay for playback. */
-  speaking(sessionId: string, text: string, opts: { final?: boolean } = {}): void {
+  /**
+   * Pacific Ops sent text to ConversationRelay for playback. `stillWorking` marks a progress
+   * line spoken while the request is still being handled, so playback settles back to
+   * thinking rather than listening.
+   */
+  speaking(sessionId: string, text: string, opts: { final?: boolean; stillWorking?: boolean } = {}): void {
     const t = this.track(sessionId);
     if (t.executing || t.outcome) return; // the outcome of an action outranks the words describing it
     this.clearSettle(t);
@@ -89,7 +94,9 @@ export class VoicePresenceReporter {
       if (t.executing || t.outcome) return;
       const conv = this.voiceStore.getSession(sessionId)?.conversationState;
       if (conv === 'COMPLETE') return;
-      if (conv === 'AWAITING_APPROVAL_CONFIRMATION') {
+      if (opts.stillWorking) {
+        this.emit(sessionId, 'thinking', { status: 'Processing request' });
+      } else if (conv === 'AWAITING_APPROVAL_CONFIRMATION') {
         this.emit(sessionId, 'awaiting_approval', { status: 'Waiting for “confirm approval”' });
       } else {
         this.emit(sessionId, 'listening', { status: 'Waiting for owner' });

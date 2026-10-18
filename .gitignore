@@ -7,3 +7,6 @@ credentials.json
 credentials.*.json
 /data/
 .DS_Store
+
+/supabase/.temp/
+/Claude outputs/

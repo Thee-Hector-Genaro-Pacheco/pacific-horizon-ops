@@ -31,6 +31,7 @@ import {
 import { getAuthenticatedClient, getExpectedAccount } from '../auth.js';
 import { PacificOpsRuntimeStore, estimatePlaybackMs } from '../runtime/pacificOpsRuntime.js';
 import { VoicePresenceReporter, observeExecutor, type ReporterOptions, type RuntimeSink } from './presenceReporter.js';
+import type { PhotoBoothVoiceDeps } from './analytics.js';
 
 export interface VoiceServerOptions {
   port?: number;
@@ -55,6 +56,8 @@ export interface VoiceServerOptions {
   presenceOptions?: ReporterOptions;
   /** Decides who may enter an inbound session. Defaults to the owner caller-ID beta from env. */
   inboundAuthorizer?: InboundCallerAuthorizer;
+  /** Read-only Photo Booth analytics dependencies. Defaults to env-configured clients. */
+  photoBooth?: PhotoBoothVoiceDeps;
 }
 
 /**
@@ -449,7 +452,8 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
             actionStore,
             executor: sessionExecutor,
             draftCreator: options.draftCreator,
-            onProgress: (progressText) => {
+            photoBooth: options.photoBooth,
+            onProgress: (progressText, progressOpts) => {
               console.log(`[voice:server] [session:${sessionId}] Spoken progress: "${progressText}"`);
               voiceStore.appendTranscript(session.sessionId, {
                 role: 'agent',
@@ -457,7 +461,7 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
                 timestamp: new Date().toISOString(),
               });
               sendRelayText(ws, progressText);
-              presence?.speaking(sessionId, progressText);
+              presence?.speaking(sessionId, progressText, { stillWorking: progressOpts?.stillWorking });
             },
           });
 

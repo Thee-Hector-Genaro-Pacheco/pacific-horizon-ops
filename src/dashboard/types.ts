@@ -63,6 +63,7 @@ export type ConversationStateDTO =
   | 'READING_DRAFT'
   | 'AWAITING_APPROVAL_CONFIRMATION'
   | 'AWAITING_REJECTION_CONFIRMATION'
+  | 'PHOTO_BOOTH_ANALYTICS'
   | 'COMPLETE';
 
 export type Tone = 'neutral' | 'info' | 'success' | 'attention' | 'failure';
@@ -316,7 +317,7 @@ export interface RuntimeStateDTO {
   state: PacificOpsState;
   sessionActive: boolean;
   sessionId: string | null;
-  operation: 'call' | 'mailbox_review' | 'message_review' | 'draft_review' | 'approval' | 'send_email' | 'wrap_up' | null;
+  operation: 'call' | 'mailbox_review' | 'message_review' | 'draft_review' | 'approval' | 'send_email' | 'photo_booth_analytics' | 'wrap_up' | null;
   task: string | null;
   status: string;
   context: { senderName?: string; subject?: string } | null;

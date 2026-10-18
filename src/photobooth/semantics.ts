@@ -18,7 +18,8 @@ export const PHOTO_BOOTH_METRIC_RULES = `Photo Booth metric meanings (non-negoti
 - download_clicked / downloads.uniqueSessionsDownloaded = sessions that clicked the download control. It does NOT prove the file was saved to the device. Say "55 distinct sessions clicked download", never "55 guests saved their photos".
 - instagramClicks / tiktokClicks = outbound CTA link clicks. They do NOT prove follows. Never say anyone "followed" or that followers were gained.
 - googleReviewClicks = clicks on the Google Review CTA. It does NOT prove a review was submitted. Always say "Google Review CTA clicks", never "Google reviews".
-- feedback.averageRating / ratings = PRIVATE booth feedback submitted to our own system. NOT Google star ratings. Always call it "private booth feedback".`;
+- feedback.averageRating / ratings = PRIVATE booth feedback submitted to our own system. NOT Google star ratings. Always call it "private booth feedback".
+- If asked whether we got Google reviews or followers, say the telemetry only records Google Review CTA clicks or social CTA clicks, not submitted reviews or follows, then give the click counts.`;
 
 export const PHOTO_BOOTH_DATASET_RULES = `Dataset caveats:
 - There is no event metadata yet. An event is identified only by its UUID. Never invent an event title, client name, or event type (no "wedding", "Big 50", etc.) unless a trusted source in this conversation supplies it.
@@ -127,14 +128,16 @@ function plural(n: number, one: string, many: string): string {
  * Used as the CLI "report" output and as the agent's fallback if the model
  * cannot produce an answer that passes the semantic checks.
  */
-export function describeEventSummary(s: EventSummary): string {
+export function describeEventSummary(s: EventSummary, options: { spoken?: boolean } = {}): string {
+  // Spoken reports omit the UUID and raw ISO timestamps, which are unlistenable on a call.
+  const subject = options.spoken ? 'The booth event' : `Booth event ${s.eventId}`;
   if (s.sessions.total === 0 && s.feedback.submissions === 0) {
-    return `Booth event ${s.eventId} has no recorded delivery sessions or private feedback.`;
+    return `${subject} has no recorded delivery sessions or private feedback.`;
   }
 
   const parts: string[] = [];
-  const window = s.startedAt && s.lastActivityAt ? ` Activity spans ${s.startedAt} to ${s.lastActivityAt}.` : '';
-  parts.push(`Booth event ${s.eventId} has ${plural(s.sessions.total, 'delivery session', 'delivery sessions')}.${window}`);
+  const window = !options.spoken && s.startedAt && s.lastActivityAt ? ` Activity spans ${s.startedAt} to ${s.lastActivityAt}.` : '';
+  parts.push(`${subject} has ${plural(s.sessions.total, 'delivery session', 'delivery sessions')}.${window}`);
 
   const status = [`${s.sessions.ready} reached ready state`];
   if (s.delivery.unfinalizedSessions > 0) status.push(`${s.delivery.unfinalizedSessions} remain unfinalized`);

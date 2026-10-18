@@ -1,7 +1,7 @@
 import { type ActionRecord } from '../actions/types.js';
 import { type ActionStore, defaultActionStore } from '../actions/store.js';
 import { type ActionExecutor, defaultActionExecutor } from '../actions/executor.js';
-import { type VoiceSession } from './types.js';
+import { type VoiceSession, type VoiceConversationState, VoiceConversationStateSchema } from './types.js';
 import { type VoiceStore, defaultVoiceStore } from './store.js';
 import { classifyVoiceIntent } from './intents.js';
 import {
@@ -13,6 +13,18 @@ import {
 } from './mailbox.js';
 import { createReplyDraft, type EmailMessage } from '../gmail.js';
 import { getAuthenticatedClient, getExpectedAccount } from '../auth.js';
+import {
+  PHOTO_BOOTH_MAILBOX_COMMAND_GUIDANCE,
+  PHOTO_BOOTH_PROGRESS_TEXT,
+  PHOTO_BOOTH_VOICE_HELP,
+  askPhotoBoothForVoice,
+  isMailboxActionCommand,
+  isPhotoBoothAnalyticsRequest,
+  isReturnToInboxRequest,
+  normalizeUtterance,
+  type PhotoBoothVoiceContext,
+  type PhotoBoothVoiceDeps,
+} from './analytics.js';
 
 export interface ConversationTurnResult {
   responseText: string;
@@ -117,7 +129,10 @@ export async function handleVoiceUtterance(params: {
   voiceStore?: VoiceStore;
   actionStore?: ActionStore;
   executor?: ActionExecutor;
-  onProgress?: (text: string) => void;
+  /** Speaks text before the turn finishes. `stillWorking` means the request is still being handled. */
+  onProgress?: (text: string, opts?: { stillWorking?: boolean }) => void;
+  /** Read-only Photo Booth analytics dependencies (mocked in tests). */
+  photoBooth?: PhotoBoothVoiceDeps;
   draftCreator?: (params: {
     to: string;
     subject: string;
@@ -135,6 +150,15 @@ export async function handleVoiceUtterance(params: {
     text: utterance,
     timestamp: new Date().toISOString(),
   });
+
+  // Photo Booth analytics is a separate read-only domain. It is never entered from a
+  // pending approval/rejection confirmation, so the two-step confirmation stays strict.
+  if (session.conversationState === 'PHOTO_BOOTH_ANALYTICS') {
+    return handlePhotoBoothDomainTurn({ session, utterance, voiceStore, actionStore, onProgress: params.onProgress, deps: params.photoBooth });
+  }
+  if (!ANALYTICS_BLOCKED_STATES.has(session.conversationState) && isPhotoBoothAnalyticsRequest(normalizeUtterance(utterance))) {
+    return askPhotoBooth({ session, utterance, voiceStore, onProgress: params.onProgress, deps: params.photoBooth });
+  }
 
   const isMailboxMode =
     session.actionId === 'mailbox' ||
@@ -824,4 +848,139 @@ export async function handleVoiceUtterance(params: {
       return { responseText, endCall: false };
     }
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Photo Booth analytics domain (read-only)                             */
+/* ------------------------------------------------------------------ */
+
+const ANALYTICS_BLOCKED_STATES = new Set<VoiceConversationState>([
+  'AWAITING_APPROVAL_CONFIRMATION',
+  'AWAITING_REJECTION_CONFIRMATION',
+  'COMPLETE',
+]);
+
+function isSessionMailbox(session: VoiceSession): boolean {
+  return session.actionId === 'mailbox' || session.metadata?.mode === 'mailbox';
+}
+
+function photoBoothContext(session: VoiceSession): PhotoBoothVoiceContext | null {
+  const ctx = session.metadata?.photoBooth as PhotoBoothVoiceContext | null | undefined;
+  return ctx && typeof ctx === 'object' ? ctx : null;
+}
+
+/**
+ * Answers one analytics question through the existing Photo Booth agent. Touches only
+ * the voice session: no action store, executor, draft creator or Gmail access.
+ */
+async function askPhotoBooth(args: {
+  session: VoiceSession;
+  utterance: string;
+  voiceStore: VoiceStore;
+  onProgress?: (text: string, opts?: { stillWorking?: boolean }) => void;
+  deps?: PhotoBoothVoiceDeps;
+}): Promise<ConversationTurnResult> {
+  const { session, utterance, voiceStore } = args;
+  const entering = session.conversationState !== 'PHOTO_BOOTH_ANALYTICS';
+
+  if (entering) {
+    // Remember where the owner was so "go back to my inbox" can restore it. Mailbox
+    // metadata (messages, selection, bound draft) is left untouched.
+    voiceStore.updateSessionMetadata(session.sessionId, { resumeConversationState: session.conversationState });
+  }
+  voiceStore.updateConversationState(session.sessionId, 'PHOTO_BOOTH_ANALYTICS', {
+    reason: entering ? 'Switched to Photo Booth analytics' : 'Photo Booth analytics follow-up',
+  });
+  args.onProgress?.(PHOTO_BOOTH_PROGRESS_TEXT, { stillWorking: true });
+
+  const previous = photoBoothContext(session);
+  const result = await askPhotoBoothForVoice(utterance, previous, args.deps);
+
+  if (result.ok) {
+    const context: PhotoBoothVoiceContext = {
+      eventId: result.eventId ?? previous?.eventId ?? null,
+      lastQuestion: utterance,
+      lastAnswer: result.text,
+    };
+    voiceStore.updateSessionMetadata(session.sessionId, { photoBooth: context });
+  }
+  const eventNote = result.eventId ? `; event ${result.eventId}` : '';
+  console.log(`[voice:analytics] [session:${session.sessionId}] ${result.outcome} (tools: ${result.tools.join(', ') || 'none'}${eventNote})`);
+  voiceStore.updateConversationState(session.sessionId, 'PHOTO_BOOTH_ANALYTICS', {
+    lastSpokenText: result.text,
+    reason: `Photo Booth analytics ${result.outcome} (tools: ${result.tools.join(', ') || 'none'}${eventNote})`,
+  });
+  return { responseText: result.text, endCall: false };
+}
+
+async function handlePhotoBoothDomainTurn(args: {
+  session: VoiceSession;
+  utterance: string;
+  voiceStore: VoiceStore;
+  actionStore: ActionStore;
+  onProgress?: (text: string, opts?: { stillWorking?: boolean }) => void;
+  deps?: PhotoBoothVoiceDeps;
+}): Promise<ConversationTurnResult> {
+  const { session, voiceStore } = args;
+  const norm = normalizeUtterance(args.utterance);
+  const stay = (responseText: string, reason?: string): ConversationTurnResult => {
+    voiceStore.updateConversationState(session.sessionId, 'PHOTO_BOOTH_ANALYTICS', { lastSpokenText: responseText, reason });
+    return { responseText, endCall: false };
+  };
+
+  if (norm === 'bye' || norm === 'goodbye' || norm === 'hang up' || norm === 'end call') {
+    const responseText = 'Understood. Goodbye!';
+    voiceStore.updateConversationState(session.sessionId, 'COMPLETE', { lastSpokenText: responseText, reason: 'Caller ended call' });
+    return { responseText, endCall: true };
+  }
+
+  // Repeat replays the stored spoken answer; it never re-queries analytics.
+  if (isRepeatRequest(norm) && session.lastSpokenText) {
+    return stay(session.lastSpokenText, 'Repeated last response at owner request');
+  }
+
+  if (isReturnToInboxRequest(norm)) {
+    return returnFromPhotoBooth(session, voiceStore, args.actionStore);
+  }
+
+  if (norm === 'help' || norm.includes('options') || norm.includes('what can i say')) {
+    return stay(PHOTO_BOOTH_VOICE_HELP);
+  }
+
+  if (isMailboxActionCommand(norm)) {
+    return stay(PHOTO_BOOTH_MAILBOX_COMMAND_GUIDANCE, 'Mailbox command refused while in Photo Booth analytics');
+  }
+
+  // Anything else is a follow-up question about the current analytics context.
+  return askPhotoBooth({ session, utterance: args.utterance, voiceStore, onProgress: args.onProgress, deps: args.deps });
+}
+
+function returnFromPhotoBooth(session: VoiceSession, voiceStore: VoiceStore, actionStore: ActionStore): ConversationTurnResult {
+  const mailbox = isSessionMailbox(session);
+  const selected = session.metadata?.selectedMessage as EligibleInboxMessage | null | undefined;
+  const saved = VoiceConversationStateSchema.safeParse(session.metadata?.resumeConversationState);
+  const savedUsable = saved.success && !ANALYTICS_BLOCKED_STATES.has(saved.data) && saved.data !== 'PHOTO_BOOTH_ANALYTICS';
+  // A mailbox session with no selected message is always back at message selection.
+  const resume: VoiceConversationState =
+    mailbox && !selected ? 'MAILBOX_SELECTING' : savedUsable ? saved.data : 'READY';
+
+  let responseText: string;
+  if (mailbox && resume === 'MAILBOX_SELECTING') {
+    responseText = 'Back to your inbox. You can choose message one, message two, or message three.';
+  } else if (mailbox && selected) {
+    const hasDraft = !!(session.metadata?.draftReply as string | null | undefined);
+    responseText = `Back to the email from ${selected.senderName} about "${selected.subject}". ${mailboxNextSteps(hasDraft)}`;
+  } else {
+    const action = actionStore.getAction(session.actionId);
+    responseText = action
+      ? `Back to the email from ${action.from}, subject: "${action.subject}". You can say: summary, read draft, approve, reject, or help.`
+      : 'Back to your email review. You can say summary, read draft, or help.';
+  }
+
+  voiceStore.updateSessionMetadata(session.sessionId, { resumeConversationState: null });
+  voiceStore.updateConversationState(session.sessionId, resume, {
+    lastSpokenText: responseText,
+    reason: 'Returned from Photo Booth analytics',
+  });
+  return { responseText, endCall: false };
 }

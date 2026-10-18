@@ -419,6 +419,19 @@ npm run photobooth:report -- <eventId>
 
 The reporting key is only ever sent in the `Authorization` header and is never printed.
 
+### Voice Analytics (PHRO-PB-002)
+
+On any Pacific Ops call (including "Hey Siri, call Pacific Ops"), the owner can ask booth questions mid-call. `src/voice/analytics.ts` detects them and the conversation enters the `PHOTO_BOOTH_ANALYTICS` state; answers come from the same `answerPhotoBoothQuestion()` agent with `channel: 'voice'` (short, no UUIDs or raw timestamps).
+
+- Follow-ups ("How many downloads?", "What about Instagram?") reuse the resolved event ID and the previous exchange, stored as `metadata.photoBooth` on the voice session. No API payloads are stored.
+- "Repeat" replays the last spoken answer without calling the API or the model.
+- "Go back to my inbox" restores the mailbox state the owner left (message selection, or the selected email and its draft). Mailbox metadata is never cleared by the detour.
+- Analytics is never entered from a pending "confirm approval" / "confirm rejection" step, and approve/draft/message commands are refused while in analytics.
+- Failures are spoken as failures ("isn't configured", "can't authenticate", "isn't responding", "invalid analytics response"), never as zero activity.
+- Runtime: thinking → speaking a short progress line → thinking → speaking the answer, with the Command Center task "Photo Booth analytics". No executing/success states.
+
+Start the stack exactly as for inbound calling (`npm run voice:serve`, plus your tunnel); no extra configuration beyond the Photo Booth env vars above.
+
 ### Metric Meanings the Agent Preserves
 
 - Sessions are delivery sessions created, not unique guests.
