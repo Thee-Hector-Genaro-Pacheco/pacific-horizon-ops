@@ -368,6 +368,70 @@ To prevent accidental authentication of an unintended Google account when multip
 
 ---
 
+## Photo Booth Analytics (PHRO-PB-001)
+
+Read-only access to the deterministic Photo Booth `event-analytics` API. Supabase is the source of truth and the API does every calculation; Pacific Rising Ops only queries the results and interprets them in plain language. Nothing here writes to the Photo Booth system.
+
+### How It Works
+
+```
+src/photobooth/
+├── types.ts      # Zod contracts for each API response + PhotoBoothAnalyticsError
+├── client.ts     # Server-side HTTP client (bearer auth, timeout, typed errors)
+├── tools.ts      # Anthropic tool definitions + dispatcher (never throws; failures are explicit)
+├── semantics.ts  # Metric-meaning rules, per-result caveats, phrasing checks, deterministic report
+├── agent.ts      # Claude tool-use loop that answers natural-language questions
+└── cli.ts        # photobooth:ask / photobooth:report
+```
+
+Tools exposed to the agent: `get_latest_photo_booth_event`, `get_photo_booth_event_summary`, `get_photo_booth_feedback_summary`, `get_photo_booth_delivery_health`, `compare_photo_booth_events`.
+
+An upstream failure (401, 5xx, timeout, malformed body) is returned to the model as an explicit `ok: false` tool error and is never turned into zero-valued analytics. `latest_event` returning `eventId: null` is a valid empty result.
+
+After the model answers, its text is checked for phrasings the telemetry can't support ("97 people", "followers", "Google reviews", "failed uploads", "saved their photos"). A flagged answer gets one revision request; if the revision is still flagged, the deterministic report is returned instead.
+
+### Environment Variables
+
+Add to your local `.env` (never commit the real key):
+
+```env
+PHOTO_BOOTH_ANALYTICS_URL=https://cqlrzijqezowffoxeoxo.supabase.co/functions/v1/event-analytics
+PHOTO_BOOTH_REPORTING_API_KEY=<secret>
+# Optional, defaults to 10000
+PHOTO_BOOTH_ANALYTICS_TIMEOUT_MS=10000
+```
+
+`PHOTO_BOOTH_ANALYTICS_URL` defaults to the production endpoint if unset and must be `https`. `PHOTO_BOOTH_REPORTING_API_KEY` has no default; every call fails closed without it. `photobooth:ask` also needs `ANTHROPIC_API_KEY`.
+
+### Commands
+
+```bash
+# Natural-language question through the agent (Claude + analytics tools)
+npm run photobooth:ask -- "How did the latest photo booth event perform?"
+
+# Same, printing which tools were called and whether the answer was revised
+npm run photobooth:ask -- --trace "Are there any unfinalized delivery sessions?"
+
+# Deterministic report with no LLM involved (latest event, or a specific UUID)
+npm run photobooth:report
+npm run photobooth:report -- <eventId>
+```
+
+The reporting key is only ever sent in the `Authorization` header and is never printed.
+
+### Metric Meanings the Agent Preserves
+
+- Sessions are delivery sessions created, not unique guests.
+- `completionRate` is ready / created sessions, not a download or conversion rate.
+- `preparing` sessions are unfinalized; the schema can't say why, so they're never called failures.
+- Claim views and download clicks are counted per booth session. A download click doesn't prove the file was saved to the device.
+- Instagram/TikTok numbers are CTA link clicks, not follows.
+- `googleReviewClicks` are Google Review CTA clicks, not submitted reviews.
+- Ratings are private booth feedback, not Google star ratings.
+- Events are identified by UUID only and may include testing activity; the agent never invents event names.
+
+---
+
 ## Acceptance Criteria & Testing Verification
 
 1. **Authentication**: First run opens Google consent and creates `token.json`.
