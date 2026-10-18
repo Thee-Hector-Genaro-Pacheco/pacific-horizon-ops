@@ -2,7 +2,7 @@ import { DEFAULT_ORGANIZATION_ID } from '../knowledge/db.js';
 import type { VoiceSession } from '../voice/types.js';
 import { defaultQueryRewriter, type CanonicalQuery } from './canonicalize.js';
 import { followUpTrace, type FollowUpResolution } from './followUp.js';
-import { AgentHarness } from './harness.js';
+import { AgentHarness, type ResultBinding } from './harness.js';
 import { routeIntentDeterministic } from './intents.js';
 import { sessionContextFromVoice } from './session.js';
 import type { HarnessDeps } from './tools.js';
@@ -38,6 +38,20 @@ function voiceRequest(session: VoiceSession, utterance: string): AgentRequest {
 }
 
 /**
+ * Response ownership check: a result may be rendered only by the request that asked for it,
+ * in the session that asked, from the domain that was expected. Anything else is discarded.
+ */
+export function acceptBoundResult(binding: ResultBinding, expected: { requestId: string; sessionId: string; domain: string }): boolean {
+  return binding.requestId === expected.requestId && binding.sessionId === expected.sessionId && binding.domain === expected.domain;
+}
+
+function rejectStale(binding: ResultBinding, expected: { requestId: string; sessionId: string; domain: string }): void {
+  console.warn(
+    `[agent:voice] Discarded a result that does not belong to this turn (expected ${expected.domain}, got ${binding.domain ?? 'none'}; request ${binding.requestId === expected.requestId ? 'match' : 'mismatch'}).`
+  );
+}
+
+/**
  * The intent recorded for a voice read turn. The conversation layer only calls a read tool
  * after its own deterministic domain detector (or the follow-up resolver) matched, so the
  * trace names that intent instead of a misleading "unknown".
@@ -63,7 +77,7 @@ export async function runVoiceReadTool<R>(
   const harness = new AgentHarness({ deps: opts.deps, recorder: new FileTraceRecorder(opts.dataDir) });
   const request = voiceRequest(opts.session, opts.utterance);
   const session = sessionContextFromVoice(opts.session, { organizationId: DEFAULT_ORGANIZATION_ID });
-  const { outcome } = await harness.runTool<R>(
+  const { outcome, binding } = await harness.runTool<R>(
     toolId,
     request,
     session,
@@ -71,7 +85,13 @@ export async function runVoiceReadTool<R>(
     'deterministic_command',
     { intent: voiceIntent(toolId, request.input, opts.followUp), followUp: opts.followUp ? followUpTrace(opts.followUp) : undefined }
   );
-  return outcome?.ok ? outcome.result : null;
+  const expected = { requestId: request.requestId, sessionId: opts.session.sessionId, domain: DOMAIN_OF_TOOL[toolId] };
+  if (!outcome?.ok) return null;
+  if (!acceptBoundResult(binding, expected)) {
+    rejectStale(binding, expected);
+    return null;
+  }
+  return outcome.result;
 }
 
 /**
@@ -128,5 +148,10 @@ export async function runVoiceKnowledge<R>(opts: {
     intent: voiceIntent('knowledge.search', request.input, opts.followUp),
     followUp: opts.followUp ? followUpTrace(opts.followUp) : undefined,
   });
+  const expected = { requestId: request.requestId, sessionId: opts.session.sessionId, domain: 'knowledge' };
+  if (!acceptBoundResult(out.binding, expected)) {
+    rejectStale(out.binding, expected);
+    return { result: null, clarification: null, canonical: out.canonical };
+  }
   return { result: out.outcome?.ok ? out.outcome.result : null, clarification: out.clarification, canonical: out.canonical };
 }

@@ -442,6 +442,8 @@ export function createDashboardServer(options: DashboardServerOptions = {}) {
               : null,
           followUp: t.followUp ?? null,
           resolution: t.resolution ?? null,
+          resolvedDomain: t.resolvedDomain ?? null,
+          responseDomain: t.responseDomain ?? null,
           intent: t.intent,
           plan: t.plan,
           providersInvoked: t.providersInvoked,

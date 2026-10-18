@@ -34,6 +34,7 @@ import { VoicePresenceReporter, observeExecutor, type ReporterOptions, type Runt
 import type { PhotoBoothVoiceDeps } from './analytics.js';
 import type { CalendarVoiceDeps } from './calendar.js';
 import type { KnowledgeVoiceDeps } from './knowledge.js';
+import type { EmailVoiceDeps } from './email.js';
 
 /** Identical final transcripts closer together than this are treated as one utterance. */
 export const DUPLICATE_FINAL_WINDOW_MS = 2000;
@@ -47,6 +48,8 @@ export interface VoiceServerOptions {
   endCallBufferMs?: number;
   executor?: ActionExecutor;
   mailboxMessages?: EligibleInboxMessage[];
+  /** Loads the business inbox at call setup. Injected in tests; defaults to the live Gmail read. */
+  loadMailboxMessages?: () => Promise<EligibleInboxMessage[]>;
   draftCreator?: (params: {
     to: string;
     subject: string;
@@ -67,6 +70,8 @@ export interface VoiceServerOptions {
   calendar?: CalendarVoiceDeps;
   /** Read-only company-knowledge dependencies. Defaults to PHRO_KNOWLEDGE_DATABASE_URL. */
   knowledge?: KnowledgeVoiceDeps;
+  /** Read-only inbox sources (multi-account). Injected in tests; defaults to the Google profile registry. */
+  email?: EmailVoiceDeps;
 }
 
 /**
@@ -358,6 +363,15 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
     let isEnding = false;
     /** Last final prompt on this connection, for the duplicate-final guard below. */
     let lastFinal: { norm: string; at: number } | null = null;
+    /**
+     * Response ownership. Owner prompts are numbered and run one at a time, in order, so a
+     * slow earlier turn can never speak after (or over) a later one, and every turn reads
+     * the session as the previous turn left it. The setup greeting is owned by "turn 0":
+     * once the owner has started a turn, a late greeting may not take over the call.
+     */
+    let promptTurns = 0;
+    let turnInFlight = false;
+    let turnChain: Promise<void> = Promise.resolve();
 
     ws.on('message', async (data: Buffer | string) => {
       try {
@@ -377,6 +391,7 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
           voiceStore.updateSessionStatus(session.sessionId, 'ACTIVE', { callSid });
 
           if (isMailboxMode) {
+            const greetingOwner = promptTurns;
             let messages =
               options.mailboxMessages ||
               (session.metadata?.availableMessages as EligibleInboxMessage[]) ||
@@ -384,21 +399,31 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
 
             if (messages.length === 0) {
               try {
-                const auth = await getAuthenticatedClient('business');
-                const expectedEmail = getExpectedAccount('business');
-                messages = await fetchEligibleInboxMessages(auth, { businessEmail: expectedEmail });
+                messages = options.loadMailboxMessages
+                  ? await options.loadMailboxMessages()
+                  : await fetchEligibleInboxMessages(await getAuthenticatedClient('business'), { businessEmail: getExpectedAccount('business') });
               } catch (err) {
                 console.error('[voice:server] Failed to fetch mailbox messages:', err);
               }
             }
 
+            // Merge only what setup owns. Never spread the connection-time snapshot back over
+            // newer session state (calendar/knowledge context, resume point, bound action).
+            voiceStore.updateSessionMetadata(session.sessionId, { mode: 'mailbox', availableMessages: messages });
+
+            const current = voiceStore.getSession(sessionId);
+            const ownerMovedOn = promptTurns !== greetingOwner && (turnInFlight || current?.conversationState !== 'MAILBOX_SELECTING');
+            if (ownerMovedOn || isEnding) {
+              // The inbox finished loading after the owner started talking about something
+              // else. Keep the messages for "go back to my inbox"; do not speak or switch state.
+              console.log(
+                `[voice:server] [session:${sessionId}] Late mailbox greeting discarded: owner is in ${current?.conversationState ?? 'unknown'} (turn ${promptTurns}); messages saved for later`
+              );
+              return;
+            }
+
             const greeting = formatMailboxGreeting(messages);
             console.log(`[voice:server] [session:${sessionId}] Transitioning conversationState -> MAILBOX_SELECTING, sending mailbox greeting`);
-            voiceStore.updateSessionMetadata(session.sessionId, {
-              ...(session.metadata || {}),
-              mode: 'mailbox',
-              availableMessages: messages,
-            });
             voiceStore.updateConversationState(session.sessionId, 'MAILBOX_SELECTING', {
               lastSpokenText: greeting,
               reason: 'Mailbox greeting sent on connection',
@@ -464,71 +489,90 @@ export function createVoiceServer(options: VoiceServerOptions = {}) {
           }
           lastFinal = { norm: finalNorm, at: now };
 
-          const freshSession = voiceStore.getSession(sessionId) || session;
-          console.log(`[voice:server] [session:${sessionId}] Processing prompt in state ${freshSession.conversationState}`);
-          presence?.processing(sessionId);
-          const turn = await handleVoiceUtterance({
-            session: freshSession,
-            utterance,
-            voiceStore,
-            actionStore,
-            executor: sessionExecutor,
-            draftCreator: options.draftCreator,
-            photoBooth: options.photoBooth,
-            calendar: options.calendar,
-            knowledge: options.knowledge,
-            onProgress: (progressText, progressOpts) => {
-              console.log(`[voice:server] [session:${sessionId}] Spoken progress: "${progressText}"`);
+          promptTurns += 1;
+          const turnId = promptTurns;
+          const runTurn = async () => {
+            if (isEnding) {
+              console.log(`[voice:server] [session:${sessionId}] Turn ${turnId} dropped: call is terminating`);
+              return;
+            }
+            turnInFlight = true;
+            try {
+              const freshSession = voiceStore.getSession(sessionId) || session;
+              console.log(`[voice:server] [session:${sessionId}] Processing prompt in state ${freshSession.conversationState}`);
+              presence?.processing(sessionId);
+              const turn = await handleVoiceUtterance({
+                session: freshSession,
+                utterance,
+                voiceStore,
+                actionStore,
+                executor: sessionExecutor,
+                draftCreator: options.draftCreator,
+                photoBooth: options.photoBooth,
+                calendar: options.calendar,
+                knowledge: options.knowledge,
+                email: options.email,
+                onProgress: (progressText, progressOpts) => {
+                  console.log(`[voice:server] [session:${sessionId}] Spoken progress: "${progressText}"`);
+                  voiceStore.appendTranscript(session.sessionId, {
+                    role: 'agent',
+                    text: progressText,
+                    timestamp: new Date().toISOString(),
+                  });
+                  sendRelayText(ws, progressText);
+                  presence?.speaking(sessionId, progressText, { stillWorking: progressOpts?.stillWorking });
+                },
+              });
+
+              const stateAfter = voiceStore.getSession(sessionId)?.conversationState;
+              console.log(`[voice:server] [session:${sessionId}] Handled utterance -> state: ${stateAfter}, endCall: ${turn.endCall}`);
+
               voiceStore.appendTranscript(session.sessionId, {
                 role: 'agent',
-                text: progressText,
+                text: turn.responseText,
                 timestamp: new Date().toISOString(),
               });
-              sendRelayText(ws, progressText);
-              presence?.speaking(sessionId, progressText, { stillWorking: progressOpts?.stillWorking });
-            },
-          });
 
-          const stateAfter = voiceStore.getSession(sessionId)?.conversationState;
-          console.log(`[voice:server] [session:${sessionId}] Handled utterance -> state: ${stateAfter}, endCall: ${turn.endCall}`);
+              sendRelayText(ws, turn.responseText);
+              presence?.speaking(sessionId, turn.responseText, { final: turn.endCall });
 
-          voiceStore.appendTranscript(session.sessionId, {
-            role: 'agent',
-            text: turn.responseText,
-            timestamp: new Date().toISOString(),
-          });
+              if (turn.endCall) {
+                isEnding = true;
+                // Allow adequate time for ConversationRelay TTS synthesis & verbal playback before sending end
+                const playbackBufferMs =
+                  options.endCallBufferMs !== undefined
+                    ? options.endCallBufferMs
+                    : estimatePlaybackMs(turn.responseText);
+                const graceTimeoutMs =
+                  options.endCallBufferMs !== undefined ? Math.min(50, options.endCallBufferMs) : 1500;
 
-          sendRelayText(ws, turn.responseText);
-          presence?.speaking(sessionId, turn.responseText, { final: turn.endCall });
-
-          if (turn.endCall) {
-            isEnding = true;
-            // Allow adequate time for ConversationRelay TTS synthesis & verbal playback before sending end
-            const playbackBufferMs =
-              options.endCallBufferMs !== undefined
-                ? options.endCallBufferMs
-                : estimatePlaybackMs(turn.responseText);
-            const graceTimeoutMs =
-              options.endCallBufferMs !== undefined ? Math.min(50, options.endCallBufferMs) : 1500;
-
-            console.log(
-              `[voice:server] [session:${sessionId}] Call completion initiated. Playing verbal acknowledgement (buffer: ${playbackBufferMs}ms)...`
-            );
-            setTimeout(() => {
-              if (ws.readyState === WebSocket.OPEN) {
-                console.log(`[voice:server] [session:${sessionId}] Sending ConversationRelay end message`);
-                sendRelayEnd(ws);
-                // Give Twilio a short grace window to complete teardown
+                console.log(
+                  `[voice:server] [session:${sessionId}] Call completion initiated. Playing verbal acknowledgement (buffer: ${playbackBufferMs}ms)...`
+                );
                 setTimeout(() => {
                   if (ws.readyState === WebSocket.OPEN) {
-                    console.log(`[voice:server] [session:${sessionId}] Gracefully closing WebSocket`);
-                    ws.close(1000, 'Call completed normally');
+                    console.log(`[voice:server] [session:${sessionId}] Sending ConversationRelay end message`);
+                    sendRelayEnd(ws);
+                    // Give Twilio a short grace window to complete teardown
+                    setTimeout(() => {
+                      if (ws.readyState === WebSocket.OPEN) {
+                        console.log(`[voice:server] [session:${sessionId}] Gracefully closing WebSocket`);
+                        ws.close(1000, 'Call completed normally');
+                      }
+                    }, graceTimeoutMs);
                   }
-                }, graceTimeoutMs);
+                  voiceStore.updateSessionStatus(session.sessionId, 'COMPLETED');
+                }, playbackBufferMs);
               }
-              voiceStore.updateSessionStatus(session.sessionId, 'COMPLETED');
-            }, playbackBufferMs);
-          }
+            } catch (err: unknown) {
+              console.error(`[voice:server] [session:${sessionId}] Turn ${turnId} failed: ${err instanceof Error ? err.message : String(err)}`);
+            } finally {
+              turnInFlight = false;
+            }
+          };
+          // One turn at a time, in arrival order: responses can never interleave or arrive stale.
+          turnChain = turnChain.then(runTurn, runTurn);
+          await turnChain;
           return;
         }
 

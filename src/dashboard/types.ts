@@ -555,6 +555,9 @@ export interface AgentTraceDTO {
   followUp: { inheritedDomain: string; inheritedIntent: string; reason: string } | null;
   /** Turns that ran no tool on purpose: acknowledgement, clarification, or a reply from stored context. */
   resolution: { kind: string; reason: string } | null;
+  /** Response ownership: the domain the request resolved to and the domain that answered. */
+  resolvedDomain: string | null;
+  responseDomain: string | null;
   intent: { intent: string; domain: string; source: string; highRisk: boolean; confidence: number };
   plan: { providers: string[]; completeness: string } | null;
   providersInvoked: string[];

@@ -49,8 +49,17 @@ export interface InspectReport {
   executes: boolean;
 }
 
+/** Identifies whose answer a result is. Channels must check it before rendering. */
+export interface ResultBinding {
+  requestId: string;
+  sessionId: string;
+  /** Domain of the tool that produced the result (e.g. "knowledge"), or null when nothing ran. */
+  domain: string | null;
+}
+
 interface RunOutput<R> {
   result: AgentResult;
+  binding: ResultBinding;
   /** The domain tool's own result (for channel adapters that render it). */
   raw: R | null;
   outcome: ExecutionOutcome<R> | null;
@@ -109,7 +118,7 @@ export class AgentHarness {
       // Unknown means "no executable intent yet": nothing runs, nothing is inherited.
       const status: AgentStatus = intent.intent === 'unknown' ? 'unknown' : 'not_handled';
       const traceId = this.trace(request, intent, intent.intent === 'unknown' ? null : plan, { toolsConsidered, policy: [], status, started });
-      return { result: this.result(request, traceId, status, null), raw: null, outcome: null };
+      return { result: this.result(request, traceId, status, null), binding: { requestId: request.requestId, sessionId: request.sessionId, domain: null }, raw: null, outcome: null };
     }
     const trigger: Trigger = intent.source === 'model_assisted' ? 'model' : 'deterministic_command';
     if (toolId === 'knowledge.search') return this.runKnowledgeQuery<R>(request, session, { trigger, intent });
@@ -144,7 +153,17 @@ export class AgentHarness {
     const request = AgentRequestSchema.parse(rawRequest);
     const started = Date.now();
     const intent = turn.intent ?? { domain: 'unknown', intent: 'unknown', confidence: 0, source: 'deterministic', highRisk: false, entities: {}, requestedScope: null };
-    const traceId = this.trace(request, intent, null, { toolsConsidered: [], policy: [], status: turn.status, started, resolution: { kind: turn.kind, reason: turn.reason }, followUp: turn.followUp });
+    const traceId = this.trace(request, intent, null, {
+      toolsConsidered: [],
+      policy: [],
+      status: turn.status,
+      started,
+      resolution: { kind: turn.kind, reason: turn.reason },
+      followUp: turn.followUp,
+      resolvedDomain: intent.domain,
+      // Acknowledgements/clarifications are session replies; a context answer belongs to its domain.
+      responseDomain: turn.kind === 'context_answer' ? intent.domain : 'session',
+    });
     return this.result(request, traceId, turn.status, null);
   }
 
@@ -179,8 +198,17 @@ export class AgentHarness {
         started,
         normalization,
         followUp: opts.followUp,
+        resolvedDomain: 'knowledge',
+        responseDomain: 'knowledge',
       });
-      return { result: this.result(request, traceId, 'needs_clarification', KNOWLEDGE_CLARIFY_TEXT), raw: null, outcome: null, canonical, clarification: KNOWLEDGE_CLARIFY_TEXT };
+      return {
+        result: this.result(request, traceId, 'needs_clarification', KNOWLEDGE_CLARIFY_TEXT),
+        binding: { requestId: request.requestId, sessionId: request.sessionId, domain: 'knowledge' },
+        raw: null,
+        outcome: null,
+        canonical,
+        clarification: KNOWLEDGE_CLARIFY_TEXT,
+      };
     }
     const out = await this.execute<R>('knowledge.search', request, session, { question: canonical.canonical }, opts.trigger ?? 'deterministic_command', intent, normalization, opts.followUp);
     return { ...out, canonical, clarification: null };
@@ -198,6 +226,25 @@ export class AgentHarness {
   ): Promise<RunOutput<R>> {
     const started = Date.now();
     const plan = planContext(intent, session);
+    const tool = this.registry.get(toolId);
+    const binding: ResultBinding = { requestId: request.requestId, sessionId: request.sessionId, domain: tool?.domain ?? null };
+
+    // Response ownership: a tool may only answer a request that resolved to its own domain.
+    if (tool && intent.domain !== tool.domain) {
+      const reason = `domain_mismatch:${intent.domain}->${tool.domain}`;
+      const traceId = this.trace(request, intent, plan, {
+        toolsConsidered: [toolId],
+        policy: [{ toolId, decision: 'deny', reason, trigger }],
+        status: 'denied',
+        started,
+        resolvedDomain: intent.domain,
+        responseDomain: null,
+        normalization,
+        followUp,
+      });
+      return { result: this.result(request, traceId, 'denied', null), binding: { ...binding, domain: null }, raw: null, outcome: null };
+    }
+
     const outcome = await this.boundary.execute<R>({ toolId, args, request, session, trigger, deps: this.opts.deps ?? {} });
     const status = statusFromOutcome(outcome as ExecutionOutcome<unknown>);
     const raw = outcome.ok ? outcome.result : null;
@@ -211,6 +258,8 @@ export class AgentHarness {
       started,
       normalization,
       followUp,
+      resolvedDomain: intent.domain,
+      responseDomain: outcome.ok ? binding.domain : null,
     });
     const rawText = (raw as { text?: unknown } | null)?.text;
     const text = typeof rawText === 'string' ? rawText : null;
@@ -219,14 +268,13 @@ export class AgentHarness {
       section: c.section,
       sourceLabel: c.sourceLabel,
     }));
-    const tool = this.registry.get(toolId);
     const result = this.result(request, traceId, status, text, {
       evidence: citations,
       toolResults: [{ toolId, ok: outcome.ok ? outcome.summary.ok : false, outcome: outcome.ok ? outcome.summary.outcome : outcome.policy.reason }],
       approvalRequest: outcome.policy.decision === 'requires_approval' ? { toolId, reason: outcome.policy.reason } : null,
       proposedActions: tool && tool.effect !== 'read' && !outcome.ok ? [{ toolId, effect: tool.effect, risk: tool.risk, description: tool.description }] : [],
     });
-    return { result, raw, outcome };
+    return { result, binding, raw, outcome };
   }
 
   private result(request: AgentRequest, traceId: string, status: AgentStatus, answer: string | null, extra: Partial<AgentResult> = {}): AgentResult {
@@ -260,6 +308,8 @@ export class AgentHarness {
       normalization?: NormalizationTrace;
       followUp?: FollowUpTrace;
       resolution?: AgentTrace['resolution'];
+      resolvedDomain?: string;
+      responseDomain?: string | null;
     }
   ): string {
     const traceId = newTraceId();
@@ -276,6 +326,7 @@ export class AgentHarness {
       plan: plan ? { providers: plan.providers, completeness: plan.requiredCompleteness } : null,
       ...(t.followUp ? { followUp: t.followUp } : {}),
       ...(t.resolution ? { resolution: t.resolution } : {}),
+      ...(t.resolvedDomain !== undefined ? { resolvedDomain: t.resolvedDomain, responseDomain: t.responseDomain ?? null } : {}),
       providersInvoked: t.providersInvoked ?? [],
       toolsConsidered: t.toolsConsidered,
       policy: t.policy,

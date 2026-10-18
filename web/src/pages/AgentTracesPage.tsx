@@ -53,6 +53,11 @@ export function AgentTracesPage() {
                 ) : (
                   <div className="ag-input">“{t.inputPreview}”</div>
                 )}
+                {t.resolvedDomain && t.responseDomain && t.resolvedDomain !== t.responseDomain && t.responseDomain !== 'session' && (
+                  <div className="ag-meta ag-risk">
+                    response domain mismatch: resolved {t.resolvedDomain}, answered by {t.responseDomain}
+                  </div>
+                )}
                 {t.followUp && (
                   <div className="muted ag-meta">
                     follow-up · inherited {t.followUp.inheritedIntent} from {t.followUp.inheritedDomain} ({t.followUp.reason})

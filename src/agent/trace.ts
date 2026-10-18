@@ -24,6 +24,9 @@ export interface AgentTrace {
   normalization?: NormalizationTrace;
   /** Present only when a turn inherited the active read domain through the follow-up resolver. */
   followUp?: FollowUpTrace;
+  /** Domain the request resolved to, and the domain of the tool whose result was produced. Must match. */
+  resolvedDomain?: string;
+  responseDomain?: string | null;
   /** Present for turns that ran no tool on purpose (acknowledgement or clarification). */
   resolution?: { kind: 'acknowledgement' | 'clarification' | 'context_answer'; reason: string };
   intent: { intent: IntentName; domain: string; source: string; highRisk: boolean; confidence: number };
