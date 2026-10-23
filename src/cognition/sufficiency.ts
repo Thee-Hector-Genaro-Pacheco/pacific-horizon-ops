@@ -13,8 +13,9 @@ import type { EvidenceItem } from './context.js';
  *   2. Topic anchoring: the supporting quotes must address the question's own subject
  *      terms (action/object), not just shared names like "Pacific Ops". A small synonym
  *      map keeps legitimate synonyms working.
- *   3. Independent verification: a separate check sees only the question and the quotes
- *      (not the drafted answer) and must confirm they directly establish the answer.
+ *   3. Independent verification: a separate check sees the question, the exact quotes and
+ *      the drafted answer. The quotes must directly answer the question AND the answer
+ *      must say nothing the quotes do not state.
  * Only evidence behind claims that pass is cited.
  */
 
@@ -29,6 +30,8 @@ export interface ClaimDraft {
 export interface SufficiencyInput {
   question: string;
   evidence: EvidenceItem[];
+  /** The drafted answer, checked by the verifier against the quotes. */
+  answer?: string;
   /** The answerer's own verdict and claims. */
   verdict: unknown;
   claims: unknown;
@@ -50,8 +53,11 @@ export interface SufficiencyResult {
   claims: ClaimDraft[];
 }
 
-/** Independent check: do these quotes directly establish an answer to the question? */
-export type SupportVerifier = (question: string, quotes: string[]) => Promise<boolean>;
+/**
+ * Independent check: do these quotes directly answer the question, and (when given) does
+ * the drafted answer stay within what the quotes state?
+ */
+export type SupportVerifier = (question: string, quotes: string[], answer?: string) => Promise<boolean>;
 
 const MIN_QUOTE = 12;
 
@@ -120,8 +126,41 @@ export function anchorsQuestion(question: string, support: string): boolean {
   );
 }
 
-function normalizeQuote(s: string): string {
-  return s.toLowerCase().replace(/[“”"']/g, '').replace(/[–—]/g, '-').replace(/\s+/g, ' ').trim();
+/**
+ * Deterministic text normalization for verbatim-quote checks. The answerer sees evidence
+ * entity-escaped inside <evidence> tags, so entities are decoded; Unicode is NFC; quotes,
+ * dashes and whitespace/line breaks are canonicalized. No fuzzy or semantic matching.
+ */
+export function normalizeQuote(s: string): string {
+  return s
+    .normalize('NFC')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .toLowerCase()
+    .replace(/[“”‘’"']/g, '')
+    .replace(/[–—]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Resolves a claim's evidence reference. "E2" is one block; "E2+E3" is allowed only for two
+ * adjacent chunks of the same document (a sentence pair split by a chunk boundary).
+ */
+function resolveEvidence(ref: string, byId: Map<string, EvidenceItem>): { items: EvidenceItem[]; text: string } | null {
+  const ids = ref.split('+').map((x) => x.trim()).filter(Boolean);
+  if (ids.length === 0 || ids.length > 2) return null;
+  const items = ids.map((id) => byId.get(id));
+  if (items.some((e) => !e)) return null;
+  const evs = items as EvidenceItem[];
+  if (evs.length === 2) {
+    const [a, b] = [...evs].sort((x, y) => x.provenance.ordinal - y.provenance.ordinal);
+    if (a.provenance.documentId !== b.provenance.documentId || b.provenance.ordinal - a.provenance.ordinal !== 1) return null;
+    return { items: [a, b], text: `${a.excerpt} ${b.excerpt}` };
+  }
+  return { items: evs, text: evs[0].excerpt };
 }
 
 function parseClaims(raw: unknown): ClaimDraft[] {
@@ -144,15 +183,17 @@ export async function assessEvidenceSufficiency(input: SufficiencyInput, verify:
   if (claims.length === 0) return insufficient('no_claims');
 
   const byId = new Map(input.evidence.map((e) => [e.id, e]));
+  const cited: EvidenceItem[] = [];
   for (const c of claims) {
-    const ev = byId.get(c.evidenceId);
+    const ev = resolveEvidence(c.evidenceId, byId);
     if (!ev) return insufficient('unknown_evidence');
-    if (c.quote.length < MIN_QUOTE || !normalizeQuote(ev.excerpt).includes(normalizeQuote(c.quote))) return insufficient('quote_not_in_evidence');
+    if (c.quote.length < MIN_QUOTE || !normalizeQuote(ev.text).includes(normalizeQuote(c.quote))) return insufficient('quote_not_in_evidence');
+    for (const e of ev.items) if (!cited.includes(e)) cited.push(e);
   }
   const quotes = [...new Set(claims.map((c) => c.quote))];
   if (!anchorsQuestion(input.question, quotes.join(' '))) return insufficient('off_topic_support');
-  if (!(await verify(input.question, quotes))) return insufficient('verifier_rejected');
+  if (!(await verify(input.question, quotes, input.answer))) return insufficient('verifier_rejected');
 
-  const supporting = [...new Set(claims.map((c) => c.evidenceId))].map((id) => byId.get(id)!);
+  const supporting = cited;
   return { verdict: 'supported', reason: 'supported', supporting, claims };
 }

@@ -87,8 +87,10 @@ export interface EvalCase {
 }
 
 export interface EvalAnswer {
-  status: 'answered' | 'insufficient_evidence' | 'unavailable';
+  status: 'answered' | 'insufficient_evidence' | 'unavailable' | 'generation_failed';
   citedDocKeys: string[];
+  /** Structured-generation counters for this answer (attempts, whether a format retry ran). */
+  generation?: { attempts: number; retried: boolean; failedAttempts: number };
 }
 
 export interface EvalCaseResult {
@@ -204,4 +206,40 @@ export async function runRagEval(opts: {
     passed: results.filter((r) => r.pass).length,
     total: results.length,
   };
+}
+
+export interface StabilityCase {
+  question: string;
+  kind: EvalCase['kind'];
+  runs: number;
+  passes: number;
+  /** Final answer status counts across runs, e.g. { answered: 5 }. */
+  statuses: Record<string, number>;
+  /** True when every run retrieved the same top-K documents in the same order. */
+  retrievalStable: boolean;
+  /** True when every run reached the same final status. */
+  statusStable: boolean;
+}
+
+/** Per-case consistency across repeated eval runs over the same corpus. */
+export function summarizeStability(reports: EvalReport[]): StabilityCase[] {
+  if (reports.length === 0) return [];
+  return reports[0].cases.map((first, i) => {
+    const runs = reports.map((r) => r.cases[i]);
+    const statuses: Record<string, number> = {};
+    for (const c of runs) {
+      const s = c.answerStatus ?? 'not_evaluated';
+      statuses[s] = (statuses[s] ?? 0) + 1;
+    }
+    const sig = (c: EvalCaseResult) => c.retrieved.join('|');
+    return {
+      question: first.question,
+      kind: first.kind,
+      runs: runs.length,
+      passes: runs.filter((c) => c.pass).length,
+      statuses,
+      retrievalStable: runs.every((c) => sig(c) === sig(first)),
+      statusStable: Object.keys(statuses).length === 1,
+    };
+  });
 }

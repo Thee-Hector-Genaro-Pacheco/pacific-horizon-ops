@@ -9,7 +9,7 @@ import { consoleKnowledgeLogger } from './log.js';
 import { migrate } from './migrations.js';
 import { knowledgeRoots } from './paths.js';
 import { retrieveKnowledge } from './retrieval.js';
-import { knowledgeStatus, runRagEval, type EvalCase } from './status.js';
+import { knowledgeStatus, runRagEval, summarizeStability, type EvalCase, type EvalReport } from './status.js';
 
 /**
  * Local admin CLI for the knowledge store. Ingestion is CLI-only by design: the dashboard
@@ -21,6 +21,7 @@ import { knowledgeStatus, runRagEval, type EvalCase } from './status.js';
  *   npm run knowledge:search -- "What is our photo booth policy?"
  *   npm run knowledge:ask -- "Do guests pay at sponsored events?"
  *   npm run knowledge:eval
+ *   npm run knowledge:eval -- --repeat 5        (per-case stability across repeated runs)
  */
 
 const ORG = process.env.PHRO_ORGANIZATION_ID?.trim() || DEFAULT_ORGANIZATION_ID;
@@ -101,10 +102,15 @@ async function main(): Promise<void> {
     case 'eval': {
       const fixture = flag(args, '--file') ?? 'test/fixtures/knowledge-eval.json';
       const retrievalOnly = args.includes('--retrieval-only');
+      const repeat = Math.max(1, Math.min(20, Number(flag(args, '--repeat') ?? 1) || 1));
       const { cases, k } = JSON.parse(fs.readFileSync(fixture, 'utf-8')) as { cases: EvalCase[]; k: number };
       return withDb(async (db) => {
         const embedder = createEmbeddingProvider();
-        const report = await runRagEval({
+        // Generation counters across every grounded answer in this eval (safe counts only).
+        const gen = { answers: 0, parseFailures: 0, retries: 0, retrySuccesses: 0, generationFailed: 0 };
+        const genLine = () =>
+          `Generation: ${gen.answers} answers · parse failures ${gen.parseFailures} · retries ${gen.retries} · retry successes ${gen.retrySuccesses} · generation failed ${gen.generationFailed}`;
+        const evalOnce = () => runRagEval({
           cases,
           k,
           retrieve: async (q) => (await retrieveKnowledge(db, embedder, { organizationId: ORG, query: q, limit: k, record: false })).results,
@@ -112,9 +118,44 @@ async function main(): Promise<void> {
             ? undefined
             : async (q) => {
                 const a = await askKnowledge(q, { db, embedder, organizationId: ORG });
-                return { status: a.status, citedDocKeys: a.citations.map((c) => c.provenance.docKey ?? c.title) };
+                const g = a.generation;
+                if (g.status !== 'not_run') gen.answers++;
+                gen.parseFailures += g.failures.length;
+                if (g.retried) gen.retries++;
+                if (g.retried && g.status === 'ok') gen.retrySuccesses++;
+                if (a.status === 'generation_failed') gen.generationFailed++;
+                return {
+                  status: a.status,
+                  citedDocKeys: a.citations.map((c) => c.provenance.docKey ?? c.title),
+                  generation: { attempts: g.attempts, retried: g.retried, failedAttempts: g.failures.length },
+                };
               },
         });
+        const pct = (v: number | null) => (v === null ? 'n/a' : `${Math.round(v * 100)}%`);
+        if (repeat > 1) {
+          const reports: EvalReport[] = [];
+          for (let i = 1; i <= repeat; i++) {
+            const r = await evalOnce();
+            reports.push(r);
+            const m = r.metrics;
+            console.log(
+              `run ${i}/${repeat}: ${r.passed}/${r.total} · hit@${k} ${pct(m.retrievalHitAtK)} · MRR ${m.retrievalMrr.toFixed(2)} · status ${pct(m.answerStatusAccuracy)} · unsupported rejected ${pct(m.unsupportedRejection)} · citations ${pct(m.citationCorrectness)}`
+            );
+          }
+          console.log('\nPer-case stability:');
+          const stability = summarizeStability(reports);
+          for (const c of stability) {
+            const statuses = Object.entries(c.statuses).map(([s, n]) => `${s} ${n}/${c.runs}`).join(', ');
+            console.log(`${c.passes === c.runs ? 'STABLE' : 'UNSTABLE'}  ${c.passes}/${c.runs}  [${c.kind}] ${c.question}`);
+            console.log(`        status: ${statuses} · retrieval ${c.retrievalStable ? 'identical every run' : 'VARIED'}`);
+          }
+          console.log(`\n${genLine()}`);
+          const stable = stability.filter((c) => c.passes === c.runs).length;
+          console.log(`\n${stable}/${stability.length} cases passed ${repeat}/${repeat} runs\n`);
+          if (stable !== stability.length) process.exitCode = 1;
+          return;
+        }
+        const report = await evalOnce();
         for (const c of report.cases) {
           const answer = c.answerStatus ? ` · ${c.answerStatus}${c.cited.length ? ` citing ${c.cited.join(', ')}` : ''}` : '';
           console.log(`${c.pass ? 'PASS' : 'FAIL'}  [${c.kind}] ${c.question}`);
@@ -122,19 +163,19 @@ async function main(): Promise<void> {
           for (const f of c.failures) console.log(`        ! ${f}`);
         }
         const m = report.metrics;
-        const pct = (v: number | null) => (v === null ? 'n/a' : `${Math.round(v * 100)}%`);
         console.log(`\nRetrieval: hit@${k} ${pct(m.retrievalHitAtK)} · MRR ${m.retrievalMrr.toFixed(2)} · unrelated with no retrieval ${pct(m.unrelatedNoRetrieval)}`);
         console.log(
           report.answersEvaluated
             ? `Answers:   status accuracy ${pct(m.answerStatusAccuracy)} · unsupported rejected ${pct(m.unsupportedRejection)} · citation correctness ${pct(m.citationCorrectness)}`
             : 'Answers:   not evaluated (--retrieval-only)'
         );
+        if (report.answersEvaluated) console.log(genLine());
         console.log(`${report.passed}/${report.total} cases passed\n`);
         if (report.passed !== report.total) process.exitCode = 1;
       });
     }
     default:
-      console.log('Commands: migrate | status | ingest <path> [--source <label>] [--lexical-only] | search "<query>" | ask "<question>" | eval [--file <fixture>]');
+      console.log('Commands: migrate | status | ingest <path> [--source <label>] [--lexical-only] | search "<query>" | ask "<question>" | eval [--file <fixture>] [--repeat N]');
   }
 }
 

@@ -148,7 +148,11 @@ describe('Hybrid retrieval over the seed knowledge (real Postgres + pgvector)', 
 
   it('grounded answer: evidence-only, cited, no tools, provenance retained', async () => {
     const model = fakeModel((req) => {
-      if (req.system === VERIFIER_RULES) return JSON.stringify({ directly_answers: true });
+      if (req.system === VERIFIER_RULES) {
+        // The verifier now also sees the drafted answer and must confirm it stays within the quotes.
+        assert.match(String(req.messages[0].content), /<answer>\nGuests do not pay at sponsored or promotional events\.\n<\/answer>/);
+        return JSON.stringify({ directly_answers: true, answer_within_quotes: true });
+      }
       const user = String(req.messages[0].content);
       assert.match(user, /<evidence id="E1"/);
       return JSON.stringify({
@@ -175,8 +179,13 @@ describe('Hybrid retrieval over the seed knowledge (real Postgres + pgvector)', 
     assert.deepEqual([a.status, a.answer, a.citations, a.sufficiency], ['insufficient_evidence', INSUFFICIENT_KNOWLEDGE, [], 'unknown_evidence']);
     const unsure = fakeModel(() => JSON.stringify({ verdict: 'insufficient', answer: 'Not sure.', claims: [] }));
     assert.equal((await askKnowledge('Do guests pay at sponsored events?', { db, embedder: emb, organizationId: ORG, anthropic: unsure.client })).status, 'insufficient_evidence');
+    // Prose instead of the structured answer is a generation failure (one format retry, then
+    // fail closed): never an answer, never cited, and not misreported as missing knowledge.
     const garbage = fakeModel(() => 'Sure! I sent the email.');
-    assert.equal((await askKnowledge('Do guests pay at sponsored events?', { db, embedder: emb, organizationId: ORG, anthropic: garbage.client })).status, 'insufficient_evidence');
+    const g = await askKnowledge('Do guests pay at sponsored events?', { db, embedder: emb, organizationId: ORG, anthropic: garbage.client });
+    assert.deepEqual([g.status, g.citations, g.sufficiency, g.generation.status, g.generation.attempts], ['generation_failed', [], 'not_assessed', 'parse_failed', 2]);
+    assert.notEqual(g.answer, INSUFFICIENT_KNOWLEDGE);
+    assert.equal(garbage.requests.length, 2, 'exactly one retry');
   });
 
   it('no evidence -> deterministic refusal without calling the model', async () => {

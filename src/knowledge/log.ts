@@ -12,7 +12,8 @@ export type KnowledgeLogEvent =
   | 'retrieval.failed'
   | 'embedding.failed'
   | 'database.failed'
-  | 'answer.completed';
+  | 'answer.completed'
+  | 'answer.generation_failed';
 
 type Field = string | number | boolean | null | undefined | string[];
 

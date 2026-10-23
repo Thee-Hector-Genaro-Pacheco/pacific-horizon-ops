@@ -1,6 +1,6 @@
 import { DEFAULT_ORGANIZATION_ID, KnowledgeError, createPgDb, loadKnowledgeDbConfig, type SqlDb } from '../knowledge/db.js';
 import { createEmbeddingProvider } from '../knowledge/embeddings.js';
-import { INSUFFICIENT_KNOWLEDGE, askKnowledge, type GroundedAnswer } from '../knowledge/grounding.js';
+import { GENERATION_FAILED_TEXT, INSUFFICIENT_KNOWLEDGE, askKnowledge, type GroundedAnswer } from '../knowledge/grounding.js';
 import { consoleKnowledgeLogger } from '../knowledge/log.js';
 import { migrate } from '../knowledge/migrations.js';
 import type { QueryRewriter } from '../agent/canonicalize.js';
@@ -104,6 +104,8 @@ export async function answerKnowledgeForVoice(question: string, deps: KnowledgeV
     return { text: KNOWLEDGE_UNAVAILABLE, ok: false, context: null, outcome: `unavailable:${kind}` };
   }
   if (result.status === 'unavailable') return { text: KNOWLEDGE_UNAVAILABLE, ok: false, context: null, outcome: 'unavailable' };
+  // Malformed/cut-off model output is a generation failure, never "knowledge is missing".
+  if (result.status === 'generation_failed') return { text: GENERATION_FAILED_TEXT, ok: false, context: null, outcome: 'generation_failed' };
   if (result.status !== 'answered' || result.citations.length === 0) {
     return { text: INSUFFICIENT_KNOWLEDGE, ok: true, context: { lastQuestion: question, citations: [] }, outcome: 'insufficient' };
   }
